@@ -1,8 +1,8 @@
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
@@ -19,7 +19,7 @@ const KEYRING_PROBE_KEY: &str = "__sc_storage_probe__";
 const ACTIVE_SESSION_LOCK_FILENAME: &str = "session.lock";
 
 pub const SECRET_STORAGE_UNAVAILABLE_PREFIX: &str =
-    "OS secret storage (keyring/Secret Service) is unavailable.";
+    "OS secret storage (keyring/Credential Manager/Secret Service) is unavailable.";
 
 #[derive(Debug)]
 pub enum SessionStorageError {
@@ -410,16 +410,56 @@ struct ActiveSessionLock {
 impl ActiveSessionLock {
     fn acquire() -> Result<Self> {
         let path = config_dir_path()?.join(ACTIVE_SESSION_LOCK_FILENAME);
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .with_context(|| format!("Failed opening session lock {}", path.display()))?;
-        lock_file_exclusive(&file)
-            .with_context(|| format!("Failed locking session state {}", path.display()))?;
-        Ok(Self { file })
+
+        #[cfg(windows)]
+        {
+            let file = open_unshared_lock_file(&path, true)?.ok_or_else(|| {
+                anyhow!("Failed acquiring session lock {}: locked by another sc process", path.display())
+            })?;
+            Ok(Self { file })
+        }
+
+        #[cfg(not(windows))]
+        {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .with_context(|| format!("Failed opening session lock {}", path.display()))?;
+            lock_file_exclusive(&file)
+                .with_context(|| format!("Failed locking session state {}", path.display()))?;
+            Ok(Self { file })
+        }
+    }
+}
+
+#[cfg(windows)]
+fn open_unshared_lock_file(path: &Path, blocking: bool) -> Result<Option<fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::time::{Duration, Instant};
+
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    options.share_mode(0);
+    let deadline =
+        Instant::now() + if blocking { Duration::from_secs(10) } else { Duration::ZERO };
+    loop {
+        match options.open(path) {
+            Ok(file) => return Ok(Some(file)),
+            Err(err) if err.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => {
+                if Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => {
+                return Err(err)
+                    .context(format!("Failed opening session lock {}", path.display()));
+            }
+        }
     }
 }
 
@@ -442,7 +482,7 @@ fn lock_file_exclusive(file: &fs::File) -> Result<()> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn lock_file_exclusive(_file: &fs::File) -> Result<()> {
     Ok(())
 }

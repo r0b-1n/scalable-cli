@@ -1,0 +1,6 @@
+graphql_url = "https://de.scalable.capital/api/cli/graphql"
+
+[auth]
+issuer = "https://secure.scalable.capital"
+audience = "https://de.scalable.capital/api-gateway"
+client_id = "yBM3BrpRgwSTJZRdJllvtD6jJEmyxWfE"

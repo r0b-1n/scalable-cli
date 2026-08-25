@@ -283,10 +283,14 @@ fn usage_command_name(error: &ClapError) -> Option<String> {
         .or_else(|| usage.lines().next())
         .map(str::trim)?;
 
+    fn normalize_binary_token(token: &str) -> &str {
+        token.strip_suffix(".exe").unwrap_or(token)
+    }
+
     let mut command_parts = Vec::new();
     for token in tokens
         .split_whitespace()
-        .skip_while(|token| *token != "sc")
+        .skip_while(|token| normalize_binary_token(token) != "sc")
         .skip(1)
     {
         if token.starts_with('[') || token.starts_with('<') || token.starts_with('-') {
