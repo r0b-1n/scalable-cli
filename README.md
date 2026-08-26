@@ -95,9 +95,12 @@ sc --help
 
 Scalable CLI is the official command line for the Scalable Broker.
 
-Before you authenticate, enable Scalable CLI in your profile on the Scalable
-web platform. Then authenticate and confirm the CLI can access your Scalable
-Broker account:
+> [!IMPORTANT]  
+> Before you can use the CLI, enable Scalable CLI in your profile on the Scalable
+**web platform** under Profile > Security > Agentic Investing.
+
+Once you have enabled Scalable CLI in your profile on the Scalable web platform,
+authenticate and confirm the CLI can access your Scalable Broker account:
 
 ```bash
 sc login
