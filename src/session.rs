@@ -1,10 +1,14 @@
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow};
+#[cfg(windows)]
+use anyhow::anyhow;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+use crate::config::open_unshared_lock_file;
 use crate::config::{
     AppConfig, SessionBackendPreference, TargetEnv, config_dir_path, config_file_display_path,
     ensure_private_dir, write_private_file_atomic,
@@ -413,9 +417,14 @@ impl ActiveSessionLock {
 
         #[cfg(windows)]
         {
-            let file = open_unshared_lock_file(&path, true)?.ok_or_else(|| {
-                anyhow!("Failed acquiring session lock {}: locked by another sc process", path.display())
-            })?;
+            let file = open_unshared_lock_file(&path, true)
+                .with_context(|| format!("Failed opening session lock {}", path.display()))?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Failed acquiring session lock {}: locked by another sc process",
+                        path.display()
+                    )
+                })?;
             Ok(Self { file })
         }
 
@@ -431,34 +440,6 @@ impl ActiveSessionLock {
             lock_file_exclusive(&file)
                 .with_context(|| format!("Failed locking session state {}", path.display()))?;
             Ok(Self { file })
-        }
-    }
-}
-
-#[cfg(windows)]
-fn open_unshared_lock_file(path: &Path, blocking: bool) -> Result<Option<fs::File>> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::time::{Duration, Instant};
-
-    const ERROR_SHARING_VIOLATION: i32 = 32;
-    let mut options = fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    options.share_mode(0);
-    let deadline =
-        Instant::now() + if blocking { Duration::from_secs(10) } else { Duration::ZERO };
-    loop {
-        match options.open(path) {
-            Ok(file) => return Ok(Some(file)),
-            Err(err) if err.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => {
-                if Instant::now() >= deadline {
-                    return Ok(None);
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(err) => {
-                return Err(err)
-                    .context(format!("Failed opening session lock {}", path.display()));
-            }
         }
     }
 }

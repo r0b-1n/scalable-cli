@@ -283,14 +283,18 @@ fn usage_command_name(error: &ClapError) -> Option<String> {
         .or_else(|| usage.lines().next())
         .map(str::trim)?;
 
-    fn normalize_binary_token(token: &str) -> &str {
-        token.strip_suffix(".exe").unwrap_or(token)
+    // Windows file systems are case-insensitive, so the usage line may render
+    // the binary as e.g. `sc.EXE` depending on how it was invoked.
+    fn is_sc_binary_token(token: &str) -> bool {
+        token
+            .strip_prefix("sc")
+            .is_some_and(|rest| rest.is_empty() || rest.eq_ignore_ascii_case(".exe"))
     }
 
     let mut command_parts = Vec::new();
     for token in tokens
         .split_whitespace()
-        .skip_while(|token| normalize_binary_token(token) != "sc")
+        .skip_while(|token| !is_sc_binary_token(token))
         .skip(1)
     {
         if token.starts_with('[') || token.starts_with('<') || token.starts_with('-') {
@@ -408,6 +412,15 @@ mod tests {
         assert_eq!(
             parse_failure_command_name(&error, &RawArgsCommandMatch::default()),
             "broker"
+        );
+    }
+
+    #[test]
+    fn usage_parser_recognizes_windows_exe_binary_name() {
+        let error = parse_error(&["sc.EXE", "broker", "context", "select", "--json"]);
+        assert_eq!(
+            parse_failure_command_name(&error, &RawArgsCommandMatch::default()),
+            "broker.context.select"
         );
     }
 

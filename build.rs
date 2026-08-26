@@ -29,9 +29,9 @@ fn main() {
         .and_then(toml::Value::as_table)
         .unwrap_or_else(|| panic!("missing [auth] table in {}", config_path.display()));
     let auth_value = |key: &str| {
-        auth.get(key).and_then(toml::Value::as_str).unwrap_or_else(|| {
-            panic!("missing auth.{key} in {}", config_path.display())
-        })
+        auth.get(key)
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("missing auth.{key} in {}", config_path.display()))
     };
 
     let generated = format!(

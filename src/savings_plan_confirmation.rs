@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use crate::config::{config_dir_path, set_private_file_permissions, write_private_file_atomic};
@@ -571,6 +571,8 @@ impl ActiveSubmissionGuard {
 fn open_lock_file(path: &Path, nonblocking: bool) -> Result<Option<File>> {
     #[cfg(unix)]
     {
+        use std::fs::OpenOptions;
+
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -579,43 +581,17 @@ fn open_lock_file(path: &Path, nonblocking: bool) -> Result<Option<File>> {
             .open(path)
             .with_context(|| format!("Failed opening confirmation lock {}", path.display()))?;
         set_private_file_permissions(path)?;
-        return Ok(lock_file(&file, nonblocking)?.then_some(file));
+        Ok(lock_file(&file, nonblocking)?.then_some(file))
     }
 
     #[cfg(windows)]
     {
-        use std::os::windows::fs::OpenOptionsExt;
-        use std::time::{Duration, Instant};
-
-        const ERROR_SHARING_VIOLATION: i32 = 32;
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        options.share_mode(0);
-        let deadline = Instant::now()
-            + if nonblocking {
-                Duration::ZERO
-            } else {
-                Duration::from_secs(10)
-            };
-        loop {
-            match options.open(path) {
-                Ok(file) => {
-                    set_private_file_permissions(path)?;
-                    return Ok(Some(file));
-                }
-                Err(err) if err.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => {
-                    if Instant::now() >= deadline {
-                        return Ok(None);
-                    }
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                Err(err) => {
-                    return Err(err).with_context(|| {
-                        format!("Failed opening confirmation lock {}", path.display())
-                    });
-                }
-            }
+        let file = crate::config::open_unshared_lock_file(path, !nonblocking)
+            .with_context(|| format!("Failed opening confirmation lock {}", path.display()))?;
+        if file.is_some() {
+            set_private_file_permissions(path)?;
         }
+        Ok(file)
     }
 }
 

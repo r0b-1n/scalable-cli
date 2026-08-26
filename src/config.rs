@@ -54,9 +54,15 @@ impl FromStr for TargetEnv {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionBackendPreference {
-    #[cfg_attr(any(target_os = "macos", target_os = "linux", target_os = "windows"), default)]
+    #[cfg_attr(
+        any(target_os = "macos", target_os = "linux", target_os = "windows"),
+        default
+    )]
     Keyring,
-    #[cfg_attr(not(any(target_os = "macos", target_os = "linux", target_os = "windows")), default)]
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux", target_os = "windows")),
+        default
+    )]
     File,
 }
 
@@ -313,6 +319,9 @@ pub fn ensure_private_dir(dir: &Path) -> Result<()> {
 pub fn set_private_file_permissions(path: &Path) -> Result<()> {
     #[cfg(not(unix))]
     {
+        // On Windows, files under the per-user profile (%APPDATA%) inherit an
+        // ACL that already restricts access to the owning user, SYSTEM, and
+        // Administrators, so no explicit tightening is applied here.
         let _ = path;
     }
 
@@ -324,6 +333,47 @@ pub fn set_private_file_permissions(path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Windows substitute for advisory `flock` locks: opening the lock file with
+/// all sharing disabled (`share_mode(0)`) makes the OS reject concurrent opens
+/// with `ERROR_SHARING_VIOLATION`, so holding the handle IS the lock.
+///
+/// Returns `Ok(None)` when another process still holds the lock once the wait
+/// budget is exhausted (immediately when `blocking` is false).
+#[cfg(windows)]
+pub(crate) fn open_unshared_lock_file(path: &Path, blocking: bool) -> Result<Option<fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::time::{Duration, Instant};
+
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const BLOCKING_WAIT_BUDGET: Duration = Duration::from_secs(10);
+    const RETRY_INTERVAL: Duration = Duration::from_millis(25);
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    options.share_mode(0);
+    let deadline = Instant::now()
+        + if blocking {
+            BLOCKING_WAIT_BUDGET
+        } else {
+            Duration::ZERO
+        };
+    loop {
+        match options.open(path) {
+            Ok(file) => return Ok(Some(file)),
+            Err(err) if err.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => {
+                if Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("Failed opening lock file {}", path.display()));
+            }
+        }
+    }
 }
 
 pub fn write_private_file_atomic(path: &Path, contents: &[u8]) -> Result<()> {
