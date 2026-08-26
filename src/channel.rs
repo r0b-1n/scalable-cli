@@ -20,6 +20,10 @@ pub const fn current_env() -> TargetEnv {
 }
 
 pub fn current_env_config() -> EnvConfig {
+    if let Some(mock) = mock_env_config_from_env() {
+        return mock;
+    }
+
     #[cfg(test)]
     if let Some(config) = current_env_config_override() {
         return config;
@@ -40,6 +44,55 @@ pub fn current_env_config() -> EnvConfig {
     {
         compiled_dev_env_config()
     }
+}
+
+fn mock_env_config_from_env() -> Option<EnvConfig> {
+    // Priority: explicit SC_GRAPHQL_URL, then SC_MOCK flag
+    if let Ok(url) = std::env::var("SC_GRAPHQL_URL") {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            let issuer = std::env::var("SC_OAUTH_ISSUER")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "http://127.0.0.1:4010".to_string());
+            let audience = std::env::var("SC_OAUTH_AUDIENCE")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "https://de.scalable.capital/api-gateway".to_string());
+            let client_id = std::env::var("SC_OAUTH_CLIENT_ID")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "yBM3BrpRgwSTJZRdJllvtD6jJEmyxWfE".to_string());
+            return Some(EnvConfig {
+                graphql_url: trimmed.to_string(),
+                auth: AuthConfig {
+                    issuer: issuer.trim().to_string(),
+                    audience: audience.trim().to_string(),
+                    client_id: client_id.trim().to_string(),
+                },
+            });
+        }
+    }
+    if let Ok(mock_flag) = std::env::var("SC_MOCK") {
+        let flag = mock_flag.trim().to_lowercase();
+        if flag == "1" || flag == "true" || flag == "yes" || flag == "on" {
+            let port = std::env::var("SC_MOCK_PORT")
+                .ok()
+                .and_then(|v| v.trim().parse::<u16>().ok())
+                .unwrap_or(4010);
+            let issuer = format!("http://127.0.0.1:{}", port);
+            let graphql_url = format!("http://127.0.0.1:{}/graphql", port);
+            return Some(EnvConfig {
+                graphql_url,
+                auth: AuthConfig {
+                    issuer,
+                    audience: "https://de.scalable.capital/api-gateway".to_string(),
+                    client_id: "yBM3BrpRgwSTJZRdJllvtD6jJEmyxWfE".to_string(),
+                },
+            });
+        }
+    }
+    None
 }
 
 #[cfg(not(feature = "channel-prod"))]

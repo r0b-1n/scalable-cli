@@ -46,6 +46,9 @@ pub fn build_blocking_client_https_only_with_timeout(timeout: Duration) -> Resul
 }
 
 fn configure_client_builder(builder: ClientBuilder) -> ClientBuilder {
+    if is_mock_mode() {
+        return builder;
+    }
     #[cfg(not(test))]
     {
         builder.https_only(true)
@@ -63,25 +66,37 @@ fn is_allowed_transport_scheme(url: &Url) -> bool {
         return true;
     }
 
-    #[cfg(test)]
-    {
-        is_loopback_http_for_tests(url)
+    if is_loopback_http(url) {
+        return true;
     }
 
-    #[cfg(not(test))]
-    {
-        false
-    }
+    false
 }
 
-#[cfg(test)]
-fn is_loopback_http_for_tests(url: &Url) -> bool {
+fn is_loopback_http(url: &Url) -> bool {
     if url.scheme() != "http" {
         return false;
     }
 
     url.host_str()
         .is_some_and(|host| host == "localhost" || host == "127.0.0.1" || host == "::1")
+}
+
+fn is_mock_mode() -> bool {
+    std::env::var("SC_MOCK")
+        .map(|v| {
+            let t = v.trim().to_lowercase();
+            t == "1" || t == "true" || t == "yes" || t == "on"
+        })
+        .unwrap_or(false)
+        || std::env::var("SC_GRAPHQL_URL")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+}
+
+#[cfg(test)]
+fn is_loopback_http_for_tests(url: &Url) -> bool {
+    is_loopback_http(url)
 }
 
 #[cfg(test)]
