@@ -62,6 +62,16 @@ Selenium, browser scraping, or brittle UI scripts.
 2. Extract the archive.
 3. Move the `sc` binary to a directory on your `PATH`.
 
+### Windows
+
+#### Manual install
+1. Build from source or download `sc.exe` from the [latest release](https://github.com/ScalableCapital/scalable-cli/releases) when available.
+2. Move `sc.exe` to a directory on your `PATH`.
+
+Works in both Command Prompt (`cmd`) and PowerShell. Login sessions are stored in the
+Windows Credential Manager by default; local files live under `%APPDATA%\scalable-cli`.
+The `secure_enclave` signing backend remains macOS-only and `pkcs11` remains Linux-only.
+
 ### Official binaries and source builds
 
 Official Scalable-distributed binaries are the release assets published by
@@ -397,8 +407,8 @@ signing_key_backend = "secure_enclave"
 
 Configuration options:
 
-- session_backend: where the login session is stored. Supported values: `keyring`, `file`. Default is `keyring` on macOS/Linux.
-- signing_key_backend: where the authentication signing key is stored. Supported values: `file`, `secure_enclave`, `pkcs11`. Default is `secure_enclave` on macOS and `file` on Linux. `secure_enclave` is macOS-only. `pkcs11` is Linux-only and opt-in.
+- session_backend: where the login session is stored. Supported values: `keyring`, `file`. Default is `keyring` on macOS/Linux/Windows.
+- signing_key_backend: where the authentication signing key is stored. Supported values: `file`, `secure_enclave`, `pkcs11`. Default is `secure_enclave` on macOS and `file` on Linux/Windows. `secure_enclave` is macOS-only. `pkcs11` is Linux-only and opt-in.
 
 ### Local trade controls
 
@@ -458,6 +468,7 @@ Config file locations:
 
 - macOS: ~/.config/scalable-cli/config.toml
 - Linux: $XDG_CONFIG_HOME/scalable-cli/config.toml, falling back to ~/.config/scalable-cli/config.toml
+- Windows: %APPDATA%\scalable-cli\config.toml
 
 ## Build from source
 

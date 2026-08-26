@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "linux")]
 const ENV_XDG_CONFIG_HOME: &str = "XDG_CONFIG_HOME";
+#[cfg(target_os = "windows")]
+const ENV_APPDATA: &str = "APPDATA";
 #[cfg(unix)]
 const PASSWD_BUFFER_FALLBACK_LEN: usize = 512;
 #[cfg(unix)]
@@ -52,9 +54,15 @@ impl FromStr for TargetEnv {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionBackendPreference {
-    #[cfg_attr(any(target_os = "macos", target_os = "linux"), default)]
+    #[cfg_attr(
+        any(target_os = "macos", target_os = "linux", target_os = "windows"),
+        default
+    )]
     Keyring,
-    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), default)]
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux", target_os = "windows")),
+        default
+    )]
     File,
 }
 
@@ -309,6 +317,14 @@ pub fn ensure_private_dir(dir: &Path) -> Result<()> {
 }
 
 pub fn set_private_file_permissions(path: &Path) -> Result<()> {
+    #[cfg(not(unix))]
+    {
+        // On Windows, files under the per-user profile (%APPDATA%) inherit an
+        // ACL that already restricts access to the owning user, SYSTEM, and
+        // Administrators, so no explicit tightening is applied here.
+        let _ = path;
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -317,6 +333,47 @@ pub fn set_private_file_permissions(path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Windows substitute for advisory `flock` locks: opening the lock file with
+/// all sharing disabled (`share_mode(0)`) makes the OS reject concurrent opens
+/// with `ERROR_SHARING_VIOLATION`, so holding the handle IS the lock.
+///
+/// Returns `Ok(None)` when another process still holds the lock once the wait
+/// budget is exhausted (immediately when `blocking` is false).
+#[cfg(windows)]
+pub(crate) fn open_unshared_lock_file(path: &Path, blocking: bool) -> Result<Option<fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::time::{Duration, Instant};
+
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const BLOCKING_WAIT_BUDGET: Duration = Duration::from_secs(10);
+    const RETRY_INTERVAL: Duration = Duration::from_millis(25);
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    options.share_mode(0);
+    let deadline = Instant::now()
+        + if blocking {
+            BLOCKING_WAIT_BUDGET
+        } else {
+            Duration::ZERO
+        };
+    loop {
+        match options.open(path) {
+            Ok(file) => return Ok(Some(file)),
+            Err(err) if err.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => {
+                if Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("Failed opening lock file {}", path.display()));
+            }
+        }
+    }
 }
 
 pub fn write_private_file_atomic(path: &Path, contents: &[u8]) -> Result<()> {
@@ -414,6 +471,13 @@ fn default_config_dir_path() -> Result<PathBuf> {
     }
 
     let home_dir = default_home_dir_path()?;
+    #[cfg(target_os = "windows")]
+    {
+        Ok(windows_default_config_dir_path(
+            &home_dir,
+            std::env::var_os(ENV_APPDATA).as_deref(),
+        ))
+    }
     #[cfg(target_os = "linux")]
     {
         Ok(linux_default_config_dir_path(
@@ -421,10 +485,27 @@ fn default_config_dir_path() -> Result<PathBuf> {
             std::env::var(ENV_XDG_CONFIG_HOME).ok().as_deref(),
         ))
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         Ok(home_dir.join(".config").join("scalable-cli"))
     }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_default_config_dir_path(
+    home_dir: &Path,
+    appdata_dir: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    if let Some(appdata) =
+        appdata_dir.filter(|dir| !dir.is_empty() && !dir.to_string_lossy().trim().is_empty())
+    {
+        return PathBuf::from(appdata).join("scalable-cli");
+    }
+
+    home_dir
+        .join("AppData")
+        .join("Roaming")
+        .join("scalable-cli")
 }
 
 fn default_home_dir_path() -> Result<PathBuf> {
@@ -434,9 +515,17 @@ fn default_home_dir_path() -> Result<PathBuf> {
 }
 
 fn home_dir_from_env() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    let candidate_keys: &[&str] = if cfg!(target_os = "windows") {
+        &["HOME", "USERPROFILE"]
+    } else {
+        &["HOME"]
+    };
+
+    candidate_keys.iter().find_map(|key| {
+        std::env::var_os(key)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    })
 }
 
 #[cfg(unix)]
@@ -580,6 +669,7 @@ mod tests {
             Self { key, old_value }
         }
 
+        #[cfg_attr(not(unix), allow(dead_code))]
         fn unset(key: &'static str) -> Self {
             let old_value = std::env::var_os(key);
             // SAFETY: config tests serialize environment mutation via
@@ -618,13 +708,13 @@ mod tests {
 
     #[test]
     fn default_session_backend_matches_platform_policy() {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
         assert_eq!(
             RuntimeAuthConfig::default().session_backend,
             SessionBackendPreference::Keyring
         );
 
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         assert_eq!(
             RuntimeAuthConfig::default().session_backend,
             SessionBackendPreference::File
@@ -742,6 +832,33 @@ mod tests {
     fn linux_default_config_dir_falls_back_when_xdg_config_home_empty() {
         let dir = linux_default_config_dir_path(Path::new("/home/test-user"), Some("   "));
         assert_eq!(dir, PathBuf::from("/home/test-user/.config/scalable-cli"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_default_config_dir_prefers_appdata_when_set() {
+        let dir = windows_default_config_dir_path(
+            Path::new(r"C:\Users\test-user"),
+            Some(OsString::from(r"C:\Users\test-user\AppData\Roaming").as_os_str()),
+        );
+        assert_eq!(
+            dir,
+            PathBuf::from(r"C:\Users\test-user\AppData\Roaming\scalable-cli")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_default_config_dir_falls_back_when_appdata_missing_or_blank() {
+        let home = Path::new(r"C:\Users\test-user");
+        assert_eq!(
+            windows_default_config_dir_path(home, None),
+            PathBuf::from(r"C:\Users\test-user\AppData\Roaming\scalable-cli")
+        );
+        assert_eq!(
+            windows_default_config_dir_path(home, Some(OsString::from("   ").as_os_str())),
+            PathBuf::from(r"C:\Users\test-user\AppData\Roaming\scalable-cli")
+        );
     }
 
     #[test]

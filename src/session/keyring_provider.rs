@@ -133,9 +133,15 @@ fn build_platform_store() -> Result<Arc<CredentialStore>> {
         return Ok(store);
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        let store: Arc<CredentialStore> = windows_native_keyring_store::Store::new()?;
+        return Ok(store);
+    }
+
     #[allow(unreachable_code)]
     Err(Error::NotSupportedByStore(
-        "OS secret storage is only supported on macOS and Linux".to_string(),
+        "OS secret storage is only supported on macOS, Linux, and Windows".to_string(),
     ))
 }
 

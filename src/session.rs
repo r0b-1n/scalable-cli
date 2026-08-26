@@ -2,9 +2,13 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::PathBuf;
 
+#[cfg(windows)]
+use anyhow::anyhow;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+use crate::config::open_unshared_lock_file;
 use crate::config::{
     AppConfig, SessionBackendPreference, TargetEnv, config_dir_path, config_file_display_path,
     ensure_private_dir, write_private_file_atomic,
@@ -19,7 +23,7 @@ const KEYRING_PROBE_KEY: &str = "__sc_storage_probe__";
 const ACTIVE_SESSION_LOCK_FILENAME: &str = "session.lock";
 
 pub const SECRET_STORAGE_UNAVAILABLE_PREFIX: &str =
-    "OS secret storage (keyring/Secret Service) is unavailable.";
+    "OS secret storage (keyring/Credential Manager/Secret Service) is unavailable.";
 
 #[derive(Debug)]
 pub enum SessionStorageError {
@@ -410,16 +414,33 @@ struct ActiveSessionLock {
 impl ActiveSessionLock {
     fn acquire() -> Result<Self> {
         let path = config_dir_path()?.join(ACTIVE_SESSION_LOCK_FILENAME);
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .with_context(|| format!("Failed opening session lock {}", path.display()))?;
-        lock_file_exclusive(&file)
-            .with_context(|| format!("Failed locking session state {}", path.display()))?;
-        Ok(Self { file })
+
+        #[cfg(windows)]
+        {
+            let file = open_unshared_lock_file(&path, true)
+                .with_context(|| format!("Failed opening session lock {}", path.display()))?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Failed acquiring session lock {}: locked by another sc process",
+                        path.display()
+                    )
+                })?;
+            Ok(Self { file })
+        }
+
+        #[cfg(not(windows))]
+        {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .with_context(|| format!("Failed opening session lock {}", path.display()))?;
+            lock_file_exclusive(&file)
+                .with_context(|| format!("Failed locking session state {}", path.display()))?;
+            Ok(Self { file })
+        }
     }
 }
 
@@ -442,7 +463,7 @@ fn lock_file_exclusive(file: &fs::File) -> Result<()> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn lock_file_exclusive(_file: &fs::File) -> Result<()> {
     Ok(())
 }

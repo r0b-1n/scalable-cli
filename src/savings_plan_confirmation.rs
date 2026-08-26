@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use crate::config::{config_dir_path, set_private_file_permissions, write_private_file_atomic};
@@ -535,14 +535,13 @@ struct StoreLock {
 
 impl StoreLock {
     fn acquire() -> Result<Self> {
-        let file = open_lock_file(&config_dir_path()?.join(STORE_LOCK_FILE_NAME))?;
-        lock_file(&file, false)?
-            .then_some(Self { _file: file })
+        let file = open_lock_file(&config_dir_path()?.join(STORE_LOCK_FILE_NAME), false)?
             .ok_or_else(|| {
                 anyhow!(
                     "SAVINGS_PLAN_SUBMISSION_UNKNOWN: unable to acquire confirmation-state lock"
                 )
-            })
+            })?;
+        Ok(Self { _file: file })
     }
 }
 
@@ -554,8 +553,7 @@ impl SubmissionGuard {
     fn try_acquire(confirmation_id: &str) -> Result<Option<Self>> {
         let path =
             config_dir_path()?.join(format!("savings_plan_submission_{confirmation_id}.lock"));
-        let file = open_lock_file(&path)?;
-        Ok(lock_file(&file, true)?.then_some(Self { _file: file }))
+        Ok(open_lock_file(&path, true)?.map(|file| Self { _file: file }))
     }
 }
 
@@ -566,21 +564,35 @@ struct ActiveSubmissionGuard {
 impl ActiveSubmissionGuard {
     fn try_acquire() -> Result<Option<Self>> {
         let path = config_dir_path()?.join(ACTIVE_SUBMISSION_LOCK_FILE_NAME);
-        let file = open_lock_file(&path)?;
-        Ok(lock_file(&file, true)?.then_some(Self { _file: file }))
+        Ok(open_lock_file(&path, true)?.map(|file| Self { _file: file }))
     }
 }
 
-fn open_lock_file(path: &Path) -> Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .with_context(|| format!("Failed opening confirmation lock {}", path.display()))?;
-    set_private_file_permissions(path)?;
-    Ok(file)
+fn open_lock_file(path: &Path, nonblocking: bool) -> Result<Option<File>> {
+    #[cfg(unix)]
+    {
+        use std::fs::OpenOptions;
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .with_context(|| format!("Failed opening confirmation lock {}", path.display()))?;
+        set_private_file_permissions(path)?;
+        Ok(lock_file(&file, nonblocking)?.then_some(file))
+    }
+
+    #[cfg(windows)]
+    {
+        let file = crate::config::open_unshared_lock_file(path, !nonblocking)
+            .with_context(|| format!("Failed opening confirmation lock {}", path.display()))?;
+        if file.is_some() {
+            set_private_file_permissions(path)?;
+        }
+        Ok(file)
+    }
 }
 
 #[cfg(unix)]
@@ -599,11 +611,6 @@ fn lock_file(file: &File, nonblocking: bool) -> Result<bool> {
         return Ok(false);
     }
     Err(error).context("flock LOCK_EX failed")
-}
-
-#[cfg(not(unix))]
-fn lock_file(_file: &File, _nonblocking: bool) -> Result<bool> {
-    bail!("SAVINGS_PLAN_SUBMISSION_UNKNOWN: advisory file locks are unavailable on this platform")
 }
 
 #[cfg(test)]

@@ -47,6 +47,9 @@ security-framework-sys = "2.17"
 cryptoki = "0.12"
 dbus-secret-service-keyring-store = { version = "1.0", features = ["crypto-rust", "vendored"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = { version = "1.0", default-features = false }
+
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
