@@ -448,16 +448,18 @@ async fn handle_broker_chart(variables: &Value) -> Value {
         "midPrice": 180.0 + (i as f64)*0.3,
         "timestampUtc": {"time": Utc::now().to_rfc3339()}
     })).collect();
-    json!([
-        {
-            "isin": isin,
-            "timeFrame": timeframe,
-            "currency": "USD",
-            "source": "CONSOLIDATED",
-            "closingReferencePoint": {"midPrice": 180.0, "timestampUtc": {"time": Utc::now().to_rfc3339()}},
-            "dataPoints": points
-        }
-    ])
+    json!({
+        "timeSeriesBySecurity": [
+            {
+                "isin": isin,
+                "timeFrame": timeframe,
+                "currency": "USD",
+                "source": "CONSOLIDATED",
+                "closingReferencePoint": {"midPrice": 180.0, "timestampUtc": {"time": Utc::now().to_rfc3339()}},
+                "dataPoints": points
+            }
+        ]
+    })
 }
 
 async fn handle_security_news(variables: &Value) -> Value {
@@ -1122,7 +1124,7 @@ async fn handle_update_group(State(state): State<SharedState>, variables: &Value
         }
         json!({
             "modifyPortfolioGroup": {
-                "portfolioGroup": {"id": group_id}
+                "id": group_id
             }
         })
     } else {
@@ -1177,7 +1179,7 @@ async fn handle_assign_group(State(state): State<SharedState>, variables: &Value
     }
     json!({
         "modifyPortfolioGroup": {
-            "portfolioGroup": {"id": group_id}
+            "id": group_id
         }
     })
 }
@@ -1200,7 +1202,7 @@ async fn handle_unassign_group(State(state): State<SharedState>, variables: &Val
         }
         json!({
             "modifyPortfolioGroup": {
-                "portfolioGroup": {"id": group_id}
+                "id": group_id
             }
         })
     } else {

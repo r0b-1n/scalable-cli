@@ -453,23 +453,25 @@ impl MockState {
                 json!({
                     "id": g.id,
                     "details": {
+                        "id": g.id,
                         "name": g.name,
                         "description": g.description
                     },
+                    "numberOfPendingOrders": 0,
+                    "savingsPlansAmount": "0",
                     "performance": {
-                        "timeWeightedReturnByTimeframe": [{"timeframe": "ONE_DAY", "simpleAbsoluteReturn": 0.01}]
+                        "id": format!("perf-{}", g.id),
+                        "valuation": "1000.00",
+                        "currency": "EUR",
+                        "performancesByTimeframe": [{"timeframe": "SINCE_BUY", "performance": "0.10", "simpleAbsoluteReturn": "100.00"}]
                     },
                     "items": g.items.iter().map(|isin| {
                         let h = self.holdings.iter().find(|h| &h.isin == isin);
                         json!({
+                            "id": format!("sec-{}", isin),
                             "isin": isin,
                             "name": h.map(|h| h.name.clone()).unwrap_or_else(|| isin.clone()),
-                            "type": h.map(|h| h.r#type.clone()).unwrap_or_else(|| "EQ".to_string()),
-                            "inventory": {
-                                "position": {
-                                    "filled": h.map(|h| h.quantity).unwrap_or(0.0)
-                                }
-                            }
+                            "type": h.map(|h| h.r#type.clone()).unwrap_or_else(|| "EQ".to_string())
                         })
                     }).collect::<Vec<_>>()
                 })
@@ -483,19 +485,19 @@ impl MockState {
             .filter(|h| !grouped_isins.contains(&h.isin))
             .map(|h| {
                 json!({
+                    "id": format!("sec-{}", h.isin),
                     "isin": h.isin,
                     "name": h.name,
-                    "type": h.r#type,
-                    "inventory": {
-                        "position": {
-                            "filled": h.quantity
-                        }
-                    }
+                    "type": h.r#type
                 })
             })
             .collect();
         json!({
-            "portfolioGroups": groups,
+            "portfolioGroups": {
+                "offerAllowsAdditionalPortfolioGroup": true,
+                "maxPortfolioGroupsPerPortfolioReached": false,
+                "items": groups
+            },
             "ungroupedInventoryItems": {
                 "items": ungrouped
             }
