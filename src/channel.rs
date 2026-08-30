@@ -20,13 +20,14 @@ pub const fn current_env() -> TargetEnv {
 }
 
 pub fn current_env_config() -> EnvConfig {
-    if let Some(mock) = mock_env_config_from_env() {
-        return mock;
-    }
-
     #[cfg(test)]
     if let Some(config) = current_env_config_override() {
         return config;
+    }
+
+    if let Some(mock) = mock_env_config_from_env() {
+        warn_mock_override_once(&mock);
+        return mock;
     }
 
     #[cfg(feature = "channel-prod")]
@@ -46,7 +47,23 @@ pub fn current_env_config() -> EnvConfig {
     }
 }
 
-fn mock_env_config_from_env() -> Option<EnvConfig> {
+/// One-time stderr banner so a shell with a leftover SC_MOCK/SC_GRAPHQL_URL can never
+/// silently talk to something other than the built-in environment.
+fn warn_mock_override_once(config: &EnvConfig) {
+    static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+    WARN_ONCE.call_once(|| {
+        eprintln!(
+            "warning: SC_MOCK/SC_GRAPHQL_URL override active — using GraphQL endpoint '{}' and issuer '{}' instead of the built-in environment",
+            config.graphql_url, config.auth.issuer
+        );
+    });
+}
+
+/// Environment override used for local mock/offline testing. Endpoint URLs returned
+/// here are still subject to `validate_https_url` at every call site (https, or http
+/// to a loopback host only), and the HTTP client stays HTTPS-only unless
+/// `transport_security::mock_loopback_override_active` confirms a loopback-only setup.
+pub(crate) fn mock_env_config_from_env() -> Option<EnvConfig> {
     // Priority: explicit SC_GRAPHQL_URL, then SC_MOCK flag
     if let Ok(url) = std::env::var("SC_GRAPHQL_URL") {
         let trimmed = url.trim();
@@ -180,6 +197,65 @@ mod tests {
         let cfg = current_env_config();
         assert!(cfg.graphql_url.starts_with("https://"));
         assert!(cfg.auth.issuer.starts_with("https://"));
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => unsafe {
+                    std::env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn mock_env_config_absent_without_override_vars() {
+        let _lock = crate::lock_test_env();
+        assert!(mock_env_config_from_env().is_none());
+    }
+
+    #[test]
+    fn mock_env_config_via_sc_mock_targets_loopback() {
+        let _lock = crate::lock_test_env();
+        let _mock = EnvGuard::set("SC_MOCK", "1");
+        let cfg = mock_env_config_from_env().expect("override active");
+        assert_eq!(cfg.graphql_url, "http://127.0.0.1:4010/graphql");
+        assert_eq!(cfg.auth.issuer, "http://127.0.0.1:4010");
+    }
+
+    #[test]
+    fn mock_env_config_ignores_falsy_sc_mock() {
+        let _lock = crate::lock_test_env();
+        let _mock = EnvGuard::set("SC_MOCK", "0");
+        assert!(mock_env_config_from_env().is_none());
+    }
+
+    #[test]
+    fn mock_env_config_prefers_explicit_graphql_url() {
+        let _lock = crate::lock_test_env();
+        let _mock = EnvGuard::set("SC_MOCK", "1");
+        let _url = EnvGuard::set("SC_GRAPHQL_URL", " http://localhost:9999/graphql ");
+        let cfg = mock_env_config_from_env().expect("override active");
+        assert_eq!(cfg.graphql_url, "http://localhost:9999/graphql");
     }
 
     #[test]

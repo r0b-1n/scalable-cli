@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -73,7 +73,10 @@ pub struct Transaction {
     pub side: Option<String>,
 }
 
+// `person_id`, `portfolio_id`, and `portfolios` document the fixture identity even where
+// handlers currently hardcode the same values.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct MockState {
     pub person_id: String,
     pub account_id: String,

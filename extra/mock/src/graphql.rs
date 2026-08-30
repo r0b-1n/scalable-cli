@@ -5,10 +5,8 @@ use axum::{
 };
 use chrono::Utc;
 use serde_json::{json, Value};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
-use crate::state::{MockState, PortfolioGroup, PriceAlert, SavingsPlan, SharedState, WatchlistItem};
+use crate::state::{PortfolioGroup, PriceAlert, SavingsPlan, SharedState, WatchlistItem};
 
 // Helper to detect operation
 fn detect_operation(query: &str, operation_name: Option<&str>) -> String {
@@ -113,13 +111,9 @@ pub async fn graphql_handler(
     let variables = body.get("variables").cloned().unwrap_or(json!({}));
     let op = detect_operation(query, operation_name);
 
-    // DPoP lenient check - log if missing
-    let auth_header = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
-    let dpop_header = headers.get("dpop").or_else(|| headers.get("DPoP"));
-    // For debugging, we could validate, but mock is lenient: allow missing for whoami? But CLI always sends DPoP.
-    // We just proceed.
-
-    // For local read-only testing, check header? The CLI does local check before network, so mock doesn't need to enforce.
+    // The mock is deliberately lenient: Authorization/DPoP headers are accepted but not
+    // verified, since it only ever serves fixture data on loopback.
+    let _ = &headers;
 
     let response_data = match op.as_str() {
         "WhoAmI" => handle_whoami(&variables).await,
@@ -226,7 +220,7 @@ async fn handle_whoami(variables: &Value) -> Value {
 
 async fn handle_resolve_broker_ids(State(state): State<SharedState>, variables: &Value) -> Value {
     let st = state.read().await;
-    let requested_id = variables.get("id").and_then(|v| v.as_str()).unwrap_or("person-1");
+    let _requested_id = variables.get("id").and_then(|v| v.as_str()).unwrap_or("person-1");
     // If requested is person_id, return account mapping
     // For simplicity, always return account-1 with both portfolios
     json!({
@@ -240,8 +234,8 @@ async fn handle_resolve_broker_ids(State(state): State<SharedState>, variables: 
     })
 }
 
-async fn handle_broker_overview(State(state): State<SharedState>, variables: &Value) -> Value {
-    let st = state.read().await;
+async fn handle_broker_overview(State(state): State<SharedState>, _variables: &Value) -> Value {
+    let _st = state.read().await;
     json!({
         "account": {
             "brokerPortfolio": {
@@ -261,7 +255,7 @@ async fn handle_broker_overview(State(state): State<SharedState>, variables: &Va
     })
 }
 
-async fn handle_broker_analytics(State(state): State<SharedState>, _variables: &Value) -> Value {
+async fn handle_broker_analytics(State(_state): State<SharedState>, _variables: &Value) -> Value {
     json!({
         "account": {
             "brokerPortfolio": {
@@ -286,7 +280,7 @@ async fn handle_broker_analytics(State(state): State<SharedState>, _variables: &
     })
 }
 
-async fn handle_broker_limits(State(state): State<SharedState>, _variables: &Value) -> Value {
+async fn handle_broker_limits(State(_state): State<SharedState>, _variables: &Value) -> Value {
     json!({
         "account": {
             "brokerPortfolio": {
@@ -665,7 +659,7 @@ async fn handle_savings_plan_config(State(state): State<SharedState>, variables:
     })
 }
 
-async fn handle_savings_plan_ex_ante(State(state): State<SharedState>, variables: &Value) -> Value {
+async fn handle_savings_plan_ex_ante(State(_state): State<SharedState>, variables: &Value) -> Value {
     let isin = variables.get("isin").and_then(|v| v.as_str()).unwrap_or("IE00B4L5Y983");
     json!({
         "account": {
@@ -744,8 +738,8 @@ async fn handle_portfolio_groups(State(state): State<SharedState>, _variables: &
     })
 }
 
-async fn handle_discover_overnight(State(state): State<SharedState>, variables: &Value) -> Value {
-    let st = state.read().await;
+async fn handle_discover_overnight(State(state): State<SharedState>, _variables: &Value) -> Value {
+    let _st = state.read().await;
     json!({
         "account": {
             "savingsAccounts": [
@@ -764,7 +758,7 @@ async fn handle_discover_overnight(State(state): State<SharedState>, variables: 
     })
 }
 
-async fn handle_overnight_summary(State(state): State<SharedState>, variables: &Value) -> Value {
+async fn handle_overnight_summary(State(_state): State<SharedState>, _variables: &Value) -> Value {
     json!({
         "account": {
             "savingsAccount": {
@@ -784,7 +778,7 @@ async fn handle_overnight_summary(State(state): State<SharedState>, variables: &
     })
 }
 
-async fn handle_overnight_transactions(State(state): State<SharedState>, variables: &Value) -> Value {
+async fn handle_overnight_transactions(State(_state): State<SharedState>, variables: &Value) -> Value {
     let input = variables.get("input").cloned().unwrap_or(json!({}));
     let page_size = input.get("pageSize").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
     let transactions = vec![
@@ -807,7 +801,7 @@ async fn handle_overnight_transactions(State(state): State<SharedState>, variabl
     })
 }
 
-async fn handle_tradability(State(state): State<SharedState>, variables: &Value) -> Value {
+async fn handle_tradability(State(_state): State<SharedState>, variables: &Value) -> Value {
     let isin = variables.get("isin").and_then(|v| v.as_str()).unwrap_or("US0378331005");
     let portfolio_id = variables.get("portfolioId").and_then(|v| v.as_str()).unwrap_or("portfolio-1");
     // For demo, make everything tradable, no appropriateness required except for specific ISINs
@@ -896,7 +890,7 @@ async fn handle_security_tick(State(state): State<SharedState>, variables: &Valu
     })
 }
 
-async fn handle_single_ex_ante(State(state): State<SharedState>, variables: &Value) -> Value {
+async fn handle_single_ex_ante(State(_state): State<SharedState>, _variables: &Value) -> Value {
     json!({
         "account": {
             "id": "person-1",
@@ -920,7 +914,7 @@ async fn handle_single_ex_ante(State(state): State<SharedState>, variables: &Val
     })
 }
 
-async fn handle_place_order(State(state): State<SharedState>, variables: &Value, headers: &HeaderMap) -> Value {
+async fn handle_place_order(State(state): State<SharedState>, _variables: &Value, headers: &HeaderMap) -> Value {
     let mut st = state.write().await;
     let order_id = format!("order-{}", st.next_order_id);
     st.next_order_id += 1;
@@ -941,7 +935,7 @@ async fn handle_cancel_order(variables: &Value) -> Value {
 }
 
 async fn handle_add_watchlist(State(state): State<SharedState>, variables: &Value) -> Value {
-    let portfolio_id = variables.get("portfolioId").and_then(|v| v.as_str()).unwrap_or("portfolio-1");
+    let _portfolio_id = variables.get("portfolioId").and_then(|v| v.as_str()).unwrap_or("portfolio-1");
     let isin = variables.get("isin").and_then(|v| v.as_str()).or_else(|| variables.get("input").and_then(|v| v.get("isin")).and_then(|v| v.as_str())).unwrap_or("US0378331005");
     let mut st = state.write().await;
     if !st.watchlist.iter().any(|w| w.isin == isin) {
@@ -973,7 +967,7 @@ async fn handle_remove_watchlist(State(state): State<SharedState>, variables: &V
 }
 
 async fn handle_add_price_alert(State(state): State<SharedState>, variables: &Value) -> Value {
-    let portfolio_id = variables.get("portfolioId").and_then(|v| v.as_str()).unwrap_or("portfolio-1");
+    let _portfolio_id = variables.get("portfolioId").and_then(|v| v.as_str()).unwrap_or("portfolio-1");
     let isin = variables.get("isin").and_then(|v| v.as_str()).unwrap_or("US0378331005");
     let price = variables.get("price").and_then(|v| v.as_str()).or_else(|| variables.get("price").and_then(|v| v.as_str())).unwrap_or("100");
     let price_val = variables.get("price").cloned().unwrap_or(json!("100"));
@@ -1054,7 +1048,7 @@ async fn handle_remove_savings_plan(State(state): State<SharedState>, variables:
 }
 
 async fn handle_create_savings_plan(State(state): State<SharedState>, variables: &Value) -> Value {
-    let portfolio_id = variables.get("portfolioId").and_then(|v| v.as_str()).unwrap_or("portfolio-1");
+    let _portfolio_id = variables.get("portfolioId").and_then(|v| v.as_str()).unwrap_or("portfolio-1");
     let input = variables.get("input").cloned().unwrap_or(json!({}));
     let isin = input.get("isin").and_then(|v| v.as_str()).unwrap_or("IE00B4L5Y983");
     let amount = input.get("amount").and_then(|v| v.as_str()).unwrap_or("100");

@@ -16,7 +16,6 @@ use state::{MockState, SharedState};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug)]
@@ -40,6 +39,14 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let addr = format!("{}:{}", args.host, args.port);
     let socket_addr: SocketAddr = addr.parse()?;
+
+    if !socket_addr.ip().is_loopback() {
+        eprintln!(
+            "WARNING: binding to non-loopback address {} — the mock has no real authentication \
+             (device flow auto-approves) and will serve fixture data to anyone who can reach it.",
+            socket_addr.ip()
+        );
+    }
 
     let issuer = format!("http://{}:{}", args.host, args.port);
     let graphql_url = format!("http://{}:{}/graphql", args.host, args.port);
@@ -67,11 +74,6 @@ async fn main() -> anyhow::Result<()> {
     println!("  cargo run -- --help");
     println!("");
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
     let combined_state = AppState {
         mock: mock_state,
         auth: auth_state,
@@ -89,8 +91,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/.well-known/oauth-authorization-server", get(handle_openid_combined))
         .route("/authorize", get(auth::authorize_handler))
         .route("/device", get(auth::device_page_handler))
-        .fallback(fallback_combined)
-        .layer(cors)
+        .fallback(fallback_handler)
         .with_state(combined_state);
 
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
@@ -147,12 +148,15 @@ async fn handle_jwks_combined(
     auth::jwks_handler(axum::extract::State(state.auth)).await
 }
 
-async fn root_handler() -> impl IntoResponse {
+async fn root_handler(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> impl IntoResponse {
+    let issuer = state.auth.read().await.issuer.clone();
     Json(json!({
         "name": "scalable-mock",
-        "version": "0.1.0",
-        "issuer": "http://127.0.0.1:4010",
-        "graphql_url": "http://127.0.0.1:4010/graphql",
+        "version": env!("CARGO_PKG_VERSION"),
+        "issuer": issuer,
+        "graphql_url": format!("{}/graphql", issuer.trim_end_matches('/')),
         "endpoints": [
             "POST /oauth/device/code",
             "POST /oauth/token",
@@ -167,21 +171,6 @@ async fn root_handler() -> impl IntoResponse {
 async fn fallback_handler(req: Request) -> impl IntoResponse {
     let path = req.uri().path().to_string();
     let method = req.method().to_string();
-    eprintln!("[mock] fallback {} {}", method, path);
-    (StatusCode::NOT_FOUND, Json(json!({"error": "not_found", "path": path})))
-}
-
-async fn fallback_combined(
-    axum::extract::State(_state): axum::extract::State<AppState>,
-    req: Request,
-) -> impl IntoResponse {
-    let path = req.uri().path().to_string();
-    let method = req.method().to_string();
-    // If POST to / with graphql body, try to handle as graphql
-    if method == "POST" && path == "/" {
-        // Try to treat as graphql - but we need body. For now return not found.
-        eprintln!("[mock] POST / fallback - consider using /graphql");
-    }
     eprintln!("[mock] fallback {} {}", method, path);
     (StatusCode::NOT_FOUND, Json(json!({"error": "not_found", "path": path})))
 }

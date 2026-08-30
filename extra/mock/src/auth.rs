@@ -8,8 +8,8 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use rand::{distributions::Alphanumeric, Rng};
 use rsa::traits::PublicKeyParts;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::Deserialize;
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -51,14 +51,7 @@ impl JwtKeys {
 
 #[derive(Clone, Debug)]
 pub struct DeviceCodeEntry {
-    pub device_code: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    pub verification_uri_complete: String,
-    pub expires_in: i64,
-    pub interval: u64,
     pub polls: usize,
-    pub authorized: bool,
 }
 
 pub struct AuthState {
@@ -104,7 +97,9 @@ impl AuthState {
 
 pub type SharedAuth = Arc<RwLock<AuthState>>;
 
+// Fields mirror the request contract the CLI sends; the mock accepts but does not enforce them.
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct DeviceCodeForm {
     pub client_id: Option<String>,
     pub audience: Option<String>,
@@ -145,19 +140,10 @@ pub async fn device_code_handler(
     );
     let verification_uri = format!("{}/device", issuer.trim_end_matches('/'));
     let verification_uri_complete = format!("{}/device?user_code={}", issuer.trim_end_matches('/'), user_code);
-    let entry = DeviceCodeEntry {
-        device_code: device_code.clone(),
-        user_code: user_code.clone(),
-        verification_uri: verification_uri.clone(),
-        verification_uri_complete: verification_uri_complete.clone(),
-        expires_in: 300,
-        interval: 5,
-        polls: 0,
-        authorized: false,
-    };
     {
         let mut a = auth.write().await;
-        a.device_codes.insert(device_code.clone(), entry);
+        a.device_codes
+            .insert(device_code.clone(), DeviceCodeEntry { polls: 0 });
     }
     let body = json!({
         "device_code": device_code,
@@ -170,7 +156,9 @@ pub async fn device_code_handler(
     (StatusCode::OK, Json(body))
 }
 
+// `client_id` mirrors the request contract the CLI sends; the mock accepts but does not enforce it.
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct TokenForm {
     pub grant_type: Option<String>,
     pub device_code: Option<String>,
@@ -202,15 +190,11 @@ pub async fn token_handler(
                 });
                 return (StatusCode::BAD_REQUEST, Json(body)).into_response();
             }
-            // authorized
+            // authorized: the device code is single-use from here on
+            auth_guard.device_codes.remove(&device_code);
             let person_id = "person-1";
             let session_id = format!("sess-{}", rand::thread_rng().gen::<u32>());
-            let issuer_clone = auth_guard.issuer.clone();
-            let jwt_keys_clone = auth_guard.jwt_keys.clone();
-            // need to generate token without holding lock? clone and drop guard first
-            drop(auth_guard);
-            let auth_read = auth.read().await;
-            let token = auth_read.generate_token(person_id, &session_id);
+            let token = auth_guard.generate_token(person_id, &session_id);
             let refresh_token = format!("mock-refresh-{}", rand::thread_rng().gen::<u32>());
             let id_token = token.clone(); // same for mock
             let body = json!({
