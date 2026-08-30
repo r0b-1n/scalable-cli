@@ -460,13 +460,11 @@ fn sync_parent_dir(_dir: &Path) -> Result<()> {
 }
 
 fn default_config_dir_path() -> Result<PathBuf> {
-    #[cfg(any(test, debug_assertions))]
-    {
-        if let Ok(raw_dir) = std::env::var("SC_CONFIG_DIR") {
-            let trimmed = raw_dir.trim();
-            if !trimmed.is_empty() {
-                return Ok(PathBuf::from(trimmed));
-            }
+    // SC_CONFIG_DIR is honored in all builds for isolated testing (mock mode, CI).
+    if let Ok(raw_dir) = std::env::var("SC_CONFIG_DIR") {
+        let trimmed = raw_dir.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
         }
     }
 
