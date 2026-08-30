@@ -46,6 +46,13 @@ pub fn build_blocking_client_https_only_with_timeout(timeout: Duration) -> Resul
 }
 
 fn configure_client_builder(builder: ClientBuilder) -> ClientBuilder {
+    if mock_loopback_override_active() {
+        // The env override points every endpoint at loopback (or https), so plain HTTP
+        // must be reachable for this process. Redirects are disabled entirely in this
+        // mode: no response from the mock may bounce the client to a plaintext
+        // non-loopback destination.
+        return builder.redirect(reqwest::redirect::Policy::none());
+    }
     #[cfg(not(test))]
     {
         builder.https_only(true)
@@ -58,30 +65,50 @@ fn configure_client_builder(builder: ClientBuilder) -> ClientBuilder {
     }
 }
 
+/// True only when the SC_MOCK/SC_GRAPHQL_URL override is active AND every overridden
+/// endpoint is either https or loopback http, with at least one loopback-http endpoint
+/// that actually requires relaxing `https_only`. Any other override (e.g. plain http to
+/// a non-loopback host) keeps the client HTTPS-only, and per-URL validation rejects the
+/// endpoint before a request is made.
+fn mock_loopback_override_active() -> bool {
+    let Some(cfg) = crate::channel::mock_env_config_from_env() else {
+        return false;
+    };
+    let (Ok(graphql_url), Ok(issuer)) = (
+        Url::parse(cfg.graphql_url.trim()),
+        Url::parse(cfg.auth.issuer.trim()),
+    ) else {
+        return false;
+    };
+    if !is_allowed_transport_scheme(&graphql_url) || !is_allowed_transport_scheme(&issuer) {
+        return false;
+    }
+    is_loopback_http(&graphql_url) || is_loopback_http(&issuer)
+}
+
 fn is_allowed_transport_scheme(url: &Url) -> bool {
     if url.scheme() == "https" {
         return true;
     }
 
-    #[cfg(test)]
-    {
-        is_loopback_http_for_tests(url)
+    if is_loopback_http(url) {
+        return true;
     }
 
-    #[cfg(not(test))]
-    {
-        false
-    }
+    false
 }
 
-#[cfg(test)]
-fn is_loopback_http_for_tests(url: &Url) -> bool {
+fn is_loopback_http(url: &Url) -> bool {
     if url.scheme() != "http" {
         return false;
     }
 
-    url.host_str()
-        .is_some_and(|host| host == "localhost" || host == "127.0.0.1" || host == "::1")
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
+        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -171,6 +198,101 @@ mod tests {
             .expect_err("non-https graphql url should fail");
 
         assert!(err.to_string().contains("graphql_url must use https"));
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => unsafe {
+                    std::env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn validate_https_url_accepts_loopback_http_and_rejects_other_http() {
+        for allowed in [
+            "http://127.0.0.1:4010/graphql",
+            "http://localhost:4010/graphql",
+            "http://[::1]:4010/graphql",
+            "https://de.scalable.capital/api/cli/graphql",
+        ] {
+            validate_https_url(allowed, "url").unwrap_or_else(|err| {
+                panic!("expected '{allowed}' to be accepted, got: {err}");
+            });
+        }
+
+        for rejected in [
+            "http://192.168.1.10:4010/graphql",
+            "http://evil.example/graphql",
+            "ftp://127.0.0.1/graphql",
+        ] {
+            assert!(
+                validate_https_url(rejected, "url").is_err(),
+                "expected '{rejected}' to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn mock_loopback_override_inactive_without_env_vars() {
+        let _lock = crate::lock_test_env();
+        assert!(!mock_loopback_override_active());
+    }
+
+    #[test]
+    fn mock_loopback_override_active_for_sc_mock_flag() {
+        let _lock = crate::lock_test_env();
+        let _mock = EnvGuard::set("SC_MOCK", "1");
+        assert!(mock_loopback_override_active());
+    }
+
+    #[test]
+    fn mock_loopback_override_refuses_plaintext_to_remote_host() {
+        let _lock = crate::lock_test_env();
+        let _url = EnvGuard::set("SC_GRAPHQL_URL", "http://evil.example/graphql");
+        assert!(
+            !mock_loopback_override_active(),
+            "client must stay HTTPS-only when the override points plain http at a non-loopback host"
+        );
+    }
+
+    #[test]
+    fn mock_loopback_override_refuses_remote_http_issuer() {
+        let _lock = crate::lock_test_env();
+        let _url = EnvGuard::set("SC_GRAPHQL_URL", "http://127.0.0.1:4010/graphql");
+        let _issuer = EnvGuard::set("SC_OAUTH_ISSUER", "http://evil.example");
+        assert!(!mock_loopback_override_active());
+    }
+
+    #[test]
+    fn mock_loopback_override_not_needed_for_all_https_override() {
+        let _lock = crate::lock_test_env();
+        let _url = EnvGuard::set("SC_GRAPHQL_URL", "https://staging.example/graphql");
+        let _issuer = EnvGuard::set("SC_OAUTH_ISSUER", "https://staging.example");
+        assert!(
+            !mock_loopback_override_active(),
+            "an all-https override must keep the HTTPS-only client"
+        );
     }
 
     #[test]
