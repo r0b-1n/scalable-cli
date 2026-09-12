@@ -19,8 +19,8 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
           ref={ref}
           id={id}
           className={cn(
-            "w-full px-3 py-2 bg-bg-card border border-border rounded-lg text-text-primary text-sm",
-            "placeholder:text-text-secondary/60 focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent",
+            "w-full h-10 px-3 bg-bg-inset border border-border-strong rounded-lg text-text-primary text-sm",
+            "placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent",
             "transition-colors duration-150",
             error && "border-negative focus:ring-negative/30 focus:border-negative",
             className

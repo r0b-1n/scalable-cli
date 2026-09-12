@@ -15,8 +15,10 @@ export default function AppLayout() {
       <Sidebar activeRoute={location.pathname} onNavigate={navigate} />
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header />
-        <main className="flex-1 overflow-y-auto p-6">
-          <Outlet />
+        <main className="flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-5xl px-8 py-8">
+            <Outlet />
+          </div>
         </main>
       </div>
       {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} />}

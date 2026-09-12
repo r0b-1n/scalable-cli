@@ -514,6 +514,7 @@ fn broker_command_requests_json(command: &BrokerCommand) -> bool {
         BrokerCommand::Context(context) => match &context.command {
             BrokerContextCommand::Show(args) => args.json,
             BrokerContextCommand::Select(args) => args.json,
+            BrokerContextCommand::List(args) => args.json,
         },
         BrokerCommand::Overview(args) => args.json,
         BrokerCommand::Analytics(args) => args.json,
@@ -745,6 +746,7 @@ fn machine_capabilities(config: &AppConfig) -> Value {
             "overnight.transactions",
             "broker.context.show",
             "broker.context.select",
+            "broker.context.list",
             "broker.overview",
             "broker.analytics",
             "broker.cash-breakdown",
@@ -879,6 +881,7 @@ pub(crate) fn machine_command_name(command: &Commands) -> &'static str {
             BrokerCommand::Context(context) => match &context.command {
                 BrokerContextCommand::Show(_) => "broker.context.show",
                 BrokerContextCommand::Select(_) => "broker.context.select",
+                BrokerContextCommand::List(_) => "broker.context.list",
             },
             BrokerCommand::Overview(_) => "broker.overview",
             BrokerCommand::Analytics(_) => "broker.analytics",

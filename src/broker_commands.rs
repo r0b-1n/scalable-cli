@@ -186,6 +186,69 @@ fn context_account_or_session_person_id(
     Ok(account_id.to_string())
 }
 
+pub(crate) fn execute_broker_context_list(
+    config: &AppConfig,
+    session_manager: &mut SessionManager,
+) -> Result<Value> {
+    let dpop_options = crate::channel::current_dpop_runtime_options(config);
+    let dpop_options = &dpop_options;
+    let env = resolve_active_env(session_manager)?;
+    let env_cfg = crate::channel::current_env_config();
+    let account_id = context_account_or_session_person_id(session_manager, env)?;
+    let loaded = load_active_session(session_manager, env, &env_cfg, dpop_options)?;
+    let mut session = loaded.session;
+    let access_context = loaded.access_context;
+
+    let response = execute_with_refresh_retry(
+        session_manager,
+        env,
+        &env_cfg,
+        &mut session,
+        dpop_options,
+        |token| {
+            execute_graphql(
+                &env_cfg.graphql_url,
+                token,
+                RESOLVE_BROKER_IDS_QUERY,
+                &json!({ "id": account_id }),
+                Some("ResolveBrokerIds"),
+                access_context,
+                dpop_options,
+            )
+        },
+    )?;
+
+    let resolved_account_id = response
+        .get("account")
+        .and_then(|v| v.get("id"))
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or(account_id);
+    let mut portfolio_ids = response
+        .get("account")
+        .and_then(|v| v.get("brokerPortfolios"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(Value::as_str))
+                .filter(|id| !id.trim().is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    portfolio_ids.sort();
+    portfolio_ids.dedup();
+
+    let selected_portfolio_id = load_broker_context()?.and_then(|ctx| ctx.portfolio_id);
+    Ok(json!({
+        "account_id": resolved_account_id,
+        "portfolios": portfolio_ids,
+        "selected_portfolio_id": selected_portfolio_id,
+    }))
+}
+
 pub(crate) fn run_broker_command_human(
     args: BrokerArgs,
     config: &AppConfig,
@@ -248,6 +311,38 @@ pub(crate) fn run_broker_command_human(
                             context.portfolio_id.as_deref().unwrap_or("<unset>")
                         ),
                     ]))
+                }
+            }
+            BrokerContextCommand::List(list_args) => {
+                let payload = execute_broker_context_list(config, session_manager)?;
+                if list_args.json {
+                    Ok(HumanBrokerOutput::Json(payload, true))
+                } else {
+                    let mut lines = vec![format!(
+                        "account_id: {}",
+                        payload
+                            .get("account_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("<unset>")
+                    )];
+                    let selected = payload
+                        .get("selected_portfolio_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    for id in payload
+                        .get("portfolios")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                    {
+                        if id == selected {
+                            lines.push(format!("portfolio: {id} (selected)"));
+                        } else {
+                            lines.push(format!("portfolio: {id}"));
+                        }
+                    }
+                    Ok(HumanBrokerOutput::Text(lines))
                 }
             }
         },
@@ -592,6 +687,9 @@ pub(crate) fn run_broker_command_machine(
                     "context": context,
                     "saved": true,
                 }))
+            }
+            BrokerContextCommand::List(_list_args) => {
+                execute_broker_context_list(config, session_manager)
             }
         },
         BrokerCommand::Overview(args) => execute_broker_overview(args, config, session_manager),

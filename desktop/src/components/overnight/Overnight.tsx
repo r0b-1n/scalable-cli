@@ -1,14 +1,25 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
-import Card, { CardHeader, CardTitle } from "../ui/Card";
+import { CardHeader, CardTitle } from "../ui/Card";
 import Spinner from "../ui/Spinner";
 import Button from "../ui/Button";
-import Input from "../ui/Input";
 import Select from "../ui/Select";
-import { formatCurrency, formatDateTime } from "../../lib/format";
+import Stat from "../ui/Stat";
+import EmptyState from "../ui/EmptyState";
+import { formatCurrency, formatDate, formatDateTime, formatNumber } from "../../lib/format";
+import { enumLabel, useI18n } from "../../i18n";
 import { Moon, ArrowUpRight, ArrowDownRight, ChevronLeft, ChevronRight } from "lucide-react";
 
+const TYPE_FILTER_VALUES = [
+  "DEPOSIT",
+  "WITHDRAWAL",
+  "INTEREST",
+  "CASH_TRANSFER_IN",
+  "CASH_TRANSFER_OUT",
+];
+
 export default function Overnight() {
+  const { t } = useI18n();
   const [data, setData] = useState<any>(null);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -23,7 +34,8 @@ export default function Overnight() {
       setLoading(true);
       try {
         const result = await api.getOvernight();
-        setData(result);
+        // sc --json wraps the payload in {account, result: {...}}.
+        setData((result as any)?.result ?? null);
       } catch {
       } finally {
         setLoading(false);
@@ -40,9 +52,9 @@ export default function Overnight() {
         cursor: pageCursor || undefined,
         typeFilter: typeFilter ? [typeFilter] : undefined,
       });
-      const txData = result as any;
-      setTransactions(txData.transactions || []);
-      setNextCursor(txData.nextCursor || null);
+      const txData = (result as any)?.result ?? {};
+      setTransactions(txData.items ?? []);
+      setNextCursor(txData.cursor ?? null);
     } catch {
     } finally {
       setTxLoading(false);
@@ -78,83 +90,93 @@ export default function Overnight() {
     );
   }
 
-  const typeFilters = [
-    { value: "", label: "All Types" },
-    { value: "deposit", label: "Deposit" },
-    { value: "withdrawal", label: "Withdrawal" },
-    { value: "interest", label: "Interest" },
-    { value: "fee", label: "Fee" },
-  ];
+  const rate = data?.interest_rate ? parseFloat(data.interest_rate) * 100 : null;
 
   return (
-    <div className="space-y-6 max-w-7xl">
-      <h1 className="text-2xl font-bold text-text-primary">Overnight Savings</h1>
+    <div className="space-y-8">
+      <h1 className="text-xl font-semibold text-text-primary tracking-tight">{t.overnight.title}</h1>
 
-      {/* Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card>
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 text-text-secondary">
-              <Moon size={16} />
-              <p className="text-sm">Balance</p>
-            </div>
-            <p className="text-2xl font-bold text-text-primary">
-              {formatCurrency(parseFloat(data?.balance || "0"))}
-            </p>
-          </div>
-        </Card>
-        <Card>
-          <div className="space-y-2">
-            <p className="text-sm text-text-secondary">Interest Rate</p>
-            <p className="text-2xl font-bold text-accent">
-              {data?.interestRate || "—"}% p.a.
-            </p>
-          </div>
-        </Card>
-        <Card>
-          <div className="space-y-2">
-            <p className="text-sm text-text-secondary">IBAN</p>
-            <p className="text-sm font-medium text-text-primary">
-              {data?.iban || "—"}
-            </p>
-          </div>
-        </Card>
-      </div>
+      {/* Hero */}
+      <section className="pb-8 border-b border-border">
+        <Stat
+          size="hero"
+          label={t.overnight.balance}
+          value={formatCurrency(parseFloat(data?.balance || "0"))}
+          delta={rate != null ? { text: `${formatNumber(rate)}% p.a.`, positive: true } : undefined}
+          sub={
+            data?.estimated_next_payout_amount
+              ? t.overnight.nextPayout(
+                  formatCurrency(parseFloat(data.estimated_next_payout_amount)),
+                  data.next_payout_date ? formatDate(data.next_payout_date) : null
+                )
+              : undefined
+          }
+        />
+      </section>
+
+      {/* Accrual details */}
+      <section className="grid grid-cols-2 divide-x divide-border pb-8 border-b border-border">
+        <Stat
+          size="lg"
+          label={t.overnight.accruedPeriod}
+          value={formatCurrency(parseFloat(data?.current_accrued_amount || "0"))}
+        />
+        <div className="pl-8">
+          <Stat
+            size="lg"
+            label={t.overnight.lifetimeInterest}
+            value={formatCurrency(parseFloat(data?.deposit_accrued_lifetime_amount || "0"))}
+          />
+        </div>
+      </section>
 
       {/* Transactions */}
-      <Card padding={false}>
-        <div className="px-5 py-3 border-b border-border flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">
-            Transactions
-          </h2>
+      <section>
+        <CardHeader>
+          <CardTitle>{t.overnight.transactions}</CardTitle>
           <Select
-            options={typeFilters}
+            options={[
+              { value: "", label: t.common.allTypes },
+              ...TYPE_FILTER_VALUES.map((v) => ({
+                value: v,
+                label: enumLabel(t.overnight.cashTxTypes, v),
+              })),
+            ]}
             value={typeFilter}
             onChange={(e) => {
               setTypeFilter(e.target.value);
               setCursors([]);
               setCursor(null);
             }}
-            className="w-40"
+            className="w-40 h-8 text-xs"
           />
-        </div>
+        </CardHeader>
         {txLoading ? (
           <div className="flex items-center justify-center py-12">
             <Spinner size={24} />
           </div>
         ) : transactions.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-sm text-text-secondary">No transactions found</p>
-          </div>
+          <EmptyState
+            icon={<Moon size={20} />}
+            title={t.overnight.emptyTitle}
+            description={t.overnight.emptyDesc}
+          />
         ) : (
-          <div className="divide-y divide-border/50">
+          <div className="divide-y divide-border">
             {transactions.map((tx: any) => {
               const amount = parseFloat(tx.amount || "0");
               const isCredit = amount >= 0;
               return (
-                <div key={tx.id} className="flex items-center justify-between px-5 py-3.5 hover:bg-bg-card-hover transition-colors">
+                <div
+                  key={tx.id}
+                  className="flex items-center justify-between px-2 -mx-2 py-3.5 rounded-lg hover:bg-bg-card-hover/60 transition-colors"
+                >
                   <div className="flex items-center gap-3">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isCredit ? "bg-positive/15" : "bg-negative/15"}`}>
+                    <div
+                      className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                        isCredit ? "bg-positive/10" : "bg-negative/10"
+                      }`}
+                    >
                       {isCredit ? (
                         <ArrowUpRight size={14} className="text-positive" />
                       ) : (
@@ -163,13 +185,25 @@ export default function Overnight() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-text-primary">
-                        {tx.description || tx.type?.replace(/_/g, " ") || "Transaction"}
+                        {tx.description ||
+                          enumLabel(
+                            t.overnight.cashTxTypes,
+                            tx.cash_transaction_type || tx.type,
+                            t.overnight.fallbackTx
+                          )}
                       </p>
-                      <p className="text-xs text-text-secondary">{formatDateTime(tx.date)}</p>
+                      <p className="text-2xs text-text-tertiary">
+                        {tx.last_event_datetime ? formatDateTime(tx.last_event_datetime) : "—"}
+                      </p>
                     </div>
                   </div>
-                  <span className={`text-sm font-medium ${isCredit ? "text-positive" : "text-negative"}`}>
-                    {isCredit ? "+" : ""}{formatCurrency(Math.abs(amount))}
+                  <span
+                    className={`text-sm font-medium tabular-nums ${
+                      isCredit ? "text-positive" : "text-negative"
+                    }`}
+                  >
+                    {isCredit ? "+" : "−"}
+                    {formatCurrency(Math.abs(amount), tx.currency || "EUR")}
                   </span>
                 </div>
               );
@@ -177,17 +211,17 @@ export default function Overnight() {
           </div>
         )}
 
-        <div className="flex items-center justify-between px-5 py-3 border-t border-border">
+        <div className="flex items-center justify-between pt-4">
           <Button variant="ghost" size="sm" onClick={handlePrev} disabled={cursors.length === 0}>
-            <ChevronLeft size={16} className="mr-1" />
-            Previous
+            <ChevronLeft size={15} className="mr-1" />
+            {t.common.previous}
           </Button>
           <Button variant="ghost" size="sm" onClick={handleNext} disabled={!nextCursor}>
-            Next
-            <ChevronRight size={16} className="ml-1" />
+            {t.common.next}
+            <ChevronRight size={15} className="ml-1" />
           </Button>
         </div>
-      </Card>
+      </section>
     </div>
   );
 }

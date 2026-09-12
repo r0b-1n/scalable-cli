@@ -1,4 +1,5 @@
 use crate::sc::run_sc_command;
+use crate::validate;
 use serde_json::Value;
 
 #[tauri::command]
@@ -13,7 +14,17 @@ pub async fn trade_preview(
     venue: Option<String>,
     portfolio_id: Option<String>,
 ) -> Result<Value, String> {
-    let mut args = vec!["broker", "trade", &side, "--isin", &isin];
+    validate::side(&side)?;
+    validate::isin(&isin)?;
+    validate::opt(&amount, |v| validate::decimal(v, "amount"))?;
+    validate::opt(&shares, |v| validate::decimal(v, "shares"))?;
+    validate::opt(&order_type, validate::order_type)?;
+    validate::opt(&limit_price, |v| validate::decimal(v, "limit price"))?;
+    validate::opt(&stop_price, |v| validate::decimal(v, "stop price"))?;
+    validate::opt(&venue, |v| validate::code(v, "venue"))?;
+    validate::opt(&portfolio_id, |v| validate::ident(v, "portfolio id"))?;
+
+    let mut args = vec!["broker", "trade", side.as_str(), "--isin", &isin];
     if let Some(a) = &amount {
         args.push("--amount");
         args.push(a);
@@ -42,7 +53,7 @@ pub async fn trade_preview(
         args.push("--portfolio-id");
         args.push(id);
     }
-    run_sc_command(&args).map_err(|e| e.to_string())
+    run_sc_command(&args).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -59,7 +70,18 @@ pub async fn trade_submit(
     portfolio_id: Option<String>,
     accept_unsuitable: Option<bool>,
 ) -> Result<Value, String> {
-    let mut args = vec!["broker", "trade", &side];
+    validate::side(&side)?;
+    validate::ident(&confirmation_id, "confirmation id")?;
+    validate::opt(&isin, |v| validate::isin(v))?;
+    validate::opt(&amount, |v| validate::decimal(v, "amount"))?;
+    validate::opt(&shares, |v| validate::decimal(v, "shares"))?;
+    validate::opt(&order_type, validate::order_type)?;
+    validate::opt(&limit_price, |v| validate::decimal(v, "limit price"))?;
+    validate::opt(&stop_price, |v| validate::decimal(v, "stop price"))?;
+    validate::opt(&venue, |v| validate::code(v, "venue"))?;
+    validate::opt(&portfolio_id, |v| validate::ident(v, "portfolio id"))?;
+
+    let mut args = vec!["broker", "trade", side.as_str()];
     if let Some(i) = &isin {
         args.push("--isin");
         args.push(i);
@@ -97,7 +119,7 @@ pub async fn trade_submit(
     if accept_unsuitable.unwrap_or(false) {
         args.push("--accept-unsuitable");
     }
-    run_sc_command(&args).map_err(|e| e.to_string())
+    run_sc_command(&args).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -105,10 +127,13 @@ pub async fn trade_cancel(
     order_id: String,
     portfolio_id: Option<String>,
 ) -> Result<Value, String> {
+    validate::ident(&order_id, "order id")?;
+    validate::opt(&portfolio_id, |v| validate::ident(v, "portfolio id"))?;
+
     let mut args = vec!["broker", "trade", "cancel", "--order-id", &order_id];
     if let Some(id) = &portfolio_id {
         args.push("--portfolio-id");
         args.push(id);
     }
-    run_sc_command(&args).map_err(|e| e.to_string())
+    run_sc_command(&args).await.map_err(|e| e.to_string())
 }

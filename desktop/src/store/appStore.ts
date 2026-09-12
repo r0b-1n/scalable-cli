@@ -7,6 +7,10 @@ interface AppState {
   user: WhoamiData | null;
   capabilities: CapabilitiesData | null;
   activePortfolioId: string | null;
+  // Set when the account has several portfolios and none is selected yet:
+  // the app blocks on a picker until `sc broker context` is persisted.
+  needsPortfolioSelection: boolean;
+  availablePortfolios: string[];
   activeRoute: string;
   searchOpen: boolean;
   tradeModalOpen: boolean;
@@ -19,6 +23,7 @@ interface AppState {
   setUser: (user: WhoamiData | null) => void;
   setCapabilities: (caps: CapabilitiesData | null) => void;
   setActivePortfolioId: (id: string | null) => void;
+  setPortfolioSelection: (needed: boolean, portfolios: string[]) => void;
   setActiveRoute: (route: string) => void;
   setSearchOpen: (open: boolean) => void;
   openTradeModal: (side: "buy" | "sell", isin?: string) => void;
@@ -33,6 +38,8 @@ export const useAppStore = create<AppState>((set) => ({
   user: null,
   capabilities: null,
   activePortfolioId: null,
+  needsPortfolioSelection: false,
+  availablePortfolios: [],
   activeRoute: "/",
   searchOpen: false,
   tradeModalOpen: false,
@@ -45,6 +52,8 @@ export const useAppStore = create<AppState>((set) => ({
   setUser: (user) => set({ user }),
   setCapabilities: (caps) => set({ capabilities: caps }),
   setActivePortfolioId: (id) => set({ activePortfolioId: id }),
+  setPortfolioSelection: (needed, portfolios) =>
+    set({ needsPortfolioSelection: needed, availablePortfolios: portfolios }),
   setActiveRoute: (route) => set({ activeRoute: route }),
   setSearchOpen: (open) => set({ searchOpen: open }),
   openTradeModal: (side, isin) =>

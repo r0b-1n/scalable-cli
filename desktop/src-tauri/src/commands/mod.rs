@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod broker;
+pub mod context;
 pub mod transactions;
 pub mod market;
 pub mod watchlist;

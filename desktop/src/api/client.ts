@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  MachineEnvelope,
   WhoamiData,
   OvernightData,
   OvernightTransactionsData,
@@ -26,14 +25,15 @@ import type {
   CapabilitiesData,
 } from "./types";
 
+// The Rust side already unwraps the sc MachineEnvelope: commands resolve
+// with the envelope's `data` and reject with a message string (hints
+// included) when the CLI reports an error.
 async function invokeSc<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const result = await invoke<MachineEnvelope<T>>(command, args);
-  if (!result.ok) {
-    const msg = result.error?.message || "Unknown error";
-    const hints = result.hints?.length ? `\nHints: ${result.hints.join(", ")}` : "";
-    throw new Error(`${msg}${hints}`);
+  try {
+    return await invoke<T>(command, args);
+  } catch (e) {
+    throw e instanceof Error ? e : new Error(String(e));
   }
-  return result.data as T;
 }
 
 export const api = {
@@ -41,6 +41,17 @@ export const api = {
   logout: () => invokeSc<void>("logout"),
   getWhoami: () => invokeSc<WhoamiData>("get_whoami"),
   getCapabilities: () => invokeSc<CapabilitiesData>("get_capabilities"),
+
+  getBrokerContext: () =>
+    invokeSc<{ context: { account_id: string; portfolio_id: string | null } | null }>(
+      "get_broker_context"
+    ),
+  listBrokerPortfolios: () =>
+    invokeSc<{ account_id: string; portfolios: string[]; selected_portfolio_id: string | null }>(
+      "list_broker_portfolios"
+    ),
+  selectBrokerContext: (portfolioId: string) =>
+    invokeSc<void>("select_broker_context", { portfolioId }),
 
   getOvernight: (savingsAccountId?: string) =>
     invokeSc<OvernightData>("get_overnight", { savingsAccountId }),
@@ -144,13 +155,17 @@ export const api = {
 
   getDerivatives: (params: {
     underlying: string;
-    type: string;
+    derivativeType: string;
     strategy: string;
     limit?: number;
     offset?: number;
     issuer?: string[];
     leverageMin?: string;
     leverageMax?: string;
+    knockoutBarrierMin?: string;
+    knockoutBarrierMax?: string;
+    strikeMin?: string;
+    strikeMax?: string;
     sortField?: string;
     sortOrder?: string;
     portfolioId?: string;

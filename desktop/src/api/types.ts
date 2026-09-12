@@ -7,11 +7,15 @@ export interface MachineEnvelope<T = unknown> {
 }
 
 export interface WhoamiData {
-  personOverview: {
-    id: string;
-    firstName?: string;
-    lastName?: string;
-    email?: string;
+  result: {
+    personOverview: {
+      id: string;
+      locale?: string | null;
+      personalDetails?: {
+        firstName?: string | null;
+        lastName?: string | null;
+      } | null;
+    };
   };
 }
 
@@ -230,35 +234,63 @@ export interface TradeCancelData {
   status: string;
 }
 
+// Shapes below mirror the `sc --json` projections (snake_case keys),
+// see src/broker_projections.rs in the CLI.
+
 export interface SearchData {
-  results: SearchResult[];
+  result: {
+    count: number;
+    items: SearchResult[];
+  };
 }
 
 export interface SearchResult {
   isin: string;
-  name: string;
-  type?: string;
-  exchange?: string;
-  currency?: string;
+  name: string | null;
+  security_type?: string | null;
+  quote_mid_price?: number | null;
+  quote_currency?: string | null;
+  quote_timestamp_utc?: string | null;
+  quote_is_outdated?: boolean | null;
 }
 
 export interface DerivativesData {
-  derivatives: Derivative[];
-  total?: number;
+  result: {
+    underlying_isin?: string;
+    derivative_type?: string;
+    offset?: number;
+    limit?: number;
+    total_available?: number | null;
+    count: number;
+    items: Derivative[];
+  };
+}
+
+export interface DerivativePrice {
+  kind: "money" | "point";
+  currency_iso_code: string | null;
+  value: number | null;
 }
 
 export interface Derivative {
   isin: string;
-  name?: string;
-  underlyingIsin?: string;
-  type?: string;
-  strategy?: string;
-  strike?: string;
-  leverage?: number;
-  knockoutBarrier?: string;
-  expiryDate?: string;
-  issuer?: string;
-  premium?: string;
+  underlying_isin: string | null;
+  issuer: string | null;
+  strategy: string | null;
+  product_subcategory: string | null;
+  leverage: number | null;
+  factor: number | null;
+  omega: number | null;
+  delta: number | null;
+  implied_volatility: number | null;
+  distance_to_knockout: number | null;
+  distance_to_strike: number | null;
+  strike: DerivativePrice | null;
+  knockout_barrier: DerivativePrice | null;
+  premium_absolute: { currency_iso_code: string | null; value: number | null } | null;
+  premium_percentage: number | null;
+  expiry_date: { date: string | null; epoch_day: number | null } | null;
+  expiry_is_open_end: boolean | null;
 }
 
 export interface PortfolioGroupsData {

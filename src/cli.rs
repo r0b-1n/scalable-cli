@@ -175,6 +175,8 @@ pub enum BrokerContextCommand {
     Show(BrokerContextShowArgs),
     #[command(about = "Set the active broker context")]
     Select(BrokerContextSelectArgs),
+    #[command(about = "List broker portfolios available for context selection")]
+    List(BrokerContextListArgs),
 }
 
 #[derive(Debug, Args)]
@@ -188,6 +190,12 @@ pub struct BrokerContextSelectArgs {
     #[arg(long, help = "Broker portfolio id")]
     pub portfolio_id: String,
 
+    #[arg(long, help = "Print compact JSON")]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct BrokerContextListArgs {
     #[arg(long, help = "Print compact JSON")]
     pub json: bool,
 }

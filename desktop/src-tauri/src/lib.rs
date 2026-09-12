@@ -1,15 +1,18 @@
 mod commands;
 mod sc;
+mod validate;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             commands::auth::login,
             commands::auth::logout,
             commands::auth::get_whoami,
             commands::auth::get_capabilities,
+            commands::context::get_broker_context,
+            commands::context::list_broker_portfolios,
+            commands::context::select_broker_context,
             commands::broker::get_broker_overview,
             commands::broker::get_broker_analytics,
             commands::broker::get_broker_cash_breakdown,

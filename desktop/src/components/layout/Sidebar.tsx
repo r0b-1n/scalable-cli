@@ -12,24 +12,26 @@ import {
 } from "lucide-react";
 import { api } from "../../api/client";
 import { useAppStore } from "../../store/appStore";
+import { useI18n, type Translations } from "../../i18n";
 
 interface SidebarProps {
   activeRoute: string;
   onNavigate: (path: string) => void;
 }
 
-const navItems = [
-  { path: "/", label: "Dashboard", icon: LayoutDashboard },
-  { path: "/portfolio", label: "Portfolio", icon: Briefcase },
-  { path: "/transactions", label: "Transactions", icon: ArrowLeftRight },
-  { path: "/watchlist", label: "Watchlist", icon: Star },
-  { path: "/savings-plans", label: "Savings Plans", icon: PiggyBank },
-  { path: "/price-alerts", label: "Price Alerts", icon: Bell },
-  { path: "/overnight", label: "Overnight", icon: Moon },
+const navItems: { path: string; key: keyof Translations["nav"]; icon: typeof LayoutDashboard }[] = [
+  { path: "/", key: "dashboard", icon: LayoutDashboard },
+  { path: "/portfolio", key: "portfolio", icon: Briefcase },
+  { path: "/transactions", key: "transactions", icon: ArrowLeftRight },
+  { path: "/watchlist", key: "watchlist", icon: Star },
+  { path: "/savings-plans", key: "savingsPlans", icon: PiggyBank },
+  { path: "/price-alerts", key: "priceAlerts", icon: Bell },
+  { path: "/overnight", key: "overnight", icon: Moon },
 ];
 
 export default function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
   const { setAuthenticated, setUser } = useAppStore();
+  const { t } = useI18n();
 
   const handleLogout = async () => {
     try {
@@ -41,20 +43,20 @@ export default function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
   };
 
   return (
-    <aside className="w-56 flex flex-col bg-bg-secondary border-r border-border h-screen">
-      <div className="px-5 py-5 border-b border-border">
+    <aside className="w-60 flex flex-col bg-bg-secondary border-r border-border h-screen">
+      <div className="px-5 py-5">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center">
+          <div className="w-8 h-8 rounded-xl bg-accent flex items-center justify-center">
             <span className="text-bg-primary font-bold text-sm">S</span>
           </div>
-          <div>
-            <div className="text-sm font-semibold text-text-primary">Scalable</div>
-            <div className="text-[10px] text-text-secondary uppercase tracking-widest">Desktop</div>
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-sm font-semibold text-text-primary">Scalable</span>
+            <span className="text-2xs text-text-tertiary">Desktop</span>
           </div>
         </div>
       </div>
 
-      <nav className="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
+      <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto">
         {navItems.map((item) => {
           const isActive =
             item.path === "/"
@@ -65,14 +67,17 @@ export default function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
               key={item.path}
               onClick={() => onNavigate(item.path)}
               className={cn(
-                "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150",
+                "relative w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer",
                 isActive
-                  ? "bg-accent-dim text-accent"
-                  : "text-text-secondary hover:text-text-primary hover:bg-bg-card"
+                  ? "text-text-primary bg-white/[0.04]"
+                  : "text-text-secondary hover:text-text-primary hover:bg-white/[0.02]"
               )}
             >
-              <item.icon size={18} />
-              {item.label}
+              {isActive && (
+                <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-full bg-accent" />
+              )}
+              <item.icon size={17} strokeWidth={1.75} />
+              {t.nav[item.key]}
             </button>
           );
         })}
@@ -82,21 +87,24 @@ export default function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
         <button
           onClick={() => onNavigate("/settings")}
           className={cn(
-            "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150",
+            "relative w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer",
             activeRoute === "/settings"
-              ? "bg-accent-dim text-accent"
-              : "text-text-secondary hover:text-text-primary hover:bg-bg-card"
+              ? "text-text-primary bg-white/[0.04]"
+              : "text-text-secondary hover:text-text-primary hover:bg-white/[0.02]"
           )}
         >
-          <Settings size={18} />
-          Settings
+          {activeRoute === "/settings" && (
+            <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-full bg-accent" />
+          )}
+          <Settings size={17} strokeWidth={1.75} />
+          {t.nav.settings}
         </button>
         <button
           onClick={handleLogout}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text-secondary hover:text-negative hover:bg-negative/10 transition-all duration-150"
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-text-secondary hover:text-negative hover:bg-negative/10 transition-all duration-150 cursor-pointer"
         >
-          <LogOut size={18} />
-          Logout
+          <LogOut size={17} strokeWidth={1.75} />
+          {t.nav.logout}
         </button>
       </div>
     </aside>

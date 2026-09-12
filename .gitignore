@@ -1,6 +1,7 @@
 /target
 .cargo-home/
 lcov.info
+/temp/
 
 # macOS
 .DS_Store

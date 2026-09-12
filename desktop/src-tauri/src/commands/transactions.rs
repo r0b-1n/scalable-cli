@@ -1,4 +1,5 @@
 use crate::sc::run_sc_command;
+use crate::validate;
 use serde_json::Value;
 
 #[tauri::command]
@@ -11,14 +12,24 @@ pub async fn get_transactions(
     search_term: Option<String>,
     isin: Option<String>,
 ) -> Result<Value, String> {
+    validate::opt(&portfolio_id, |v| validate::ident(v, "portfolio id"))?;
+    validate::opt(&cursor, |v| validate::ident(v, "cursor"))?;
+    validate::opt_each(&type_filter, |v| validate::code(v, "type filter"))?;
+    validate::opt_each(&status, |v| validate::code(v, "status"))?;
+    validate::opt(&search_term, |v| validate::text(v, "search term", 200))?;
+    validate::opt(&isin, |v| validate::isin(v))?;
+
+    // Owned string must outlive `args` (Vec<&str>).
+    let page_size_arg = page_size.map(|ps| ps.to_string());
+
     let mut args = vec!["broker", "transactions"];
     if let Some(id) = &portfolio_id {
         args.push("--portfolio-id");
         args.push(id);
     }
-    if let Some(ps) = page_size {
+    if let Some(ps) = &page_size_arg {
         args.push("--page-size");
-        args.push(&ps.to_string());
+        args.push(ps);
     }
     if let Some(c) = &cursor {
         args.push("--cursor");
@@ -44,7 +55,7 @@ pub async fn get_transactions(
         args.push("--isin");
         args.push(i);
     }
-    run_sc_command(&args).map_err(|e| e.to_string())
+    run_sc_command(&args).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -52,10 +63,13 @@ pub async fn get_transaction_detail(
     transaction_id: String,
     portfolio_id: Option<String>,
 ) -> Result<Value, String> {
+    validate::ident(&transaction_id, "transaction id")?;
+    validate::opt(&portfolio_id, |v| validate::ident(v, "portfolio id"))?;
+
     let mut args = vec!["broker", "transaction", "details", "--transaction-id", &transaction_id];
     if let Some(id) = &portfolio_id {
         args.push("--portfolio-id");
         args.push(id);
     }
-    run_sc_command(&args).map_err(|e| e.to_string())
+    run_sc_command(&args).await.map_err(|e| e.to_string())
 }

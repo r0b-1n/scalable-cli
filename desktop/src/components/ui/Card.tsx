@@ -6,16 +6,25 @@ interface CardProps {
   className?: string;
   padding?: boolean;
   hover?: boolean;
+  variant?: "default" | "flat";
   onClick?: () => void;
 }
 
-export default function Card({ children, className, padding = true, hover = false, onClick }: CardProps) {
+export default function Card({
+  children,
+  className,
+  padding = true,
+  hover = false,
+  variant = "default",
+  onClick,
+}: CardProps) {
   return (
     <div
       className={cn(
-        "bg-bg-card rounded-xl border border-border",
+        variant === "default" && "bg-bg-card rounded-2xl border border-border shadow-card",
         padding && "p-5",
-        hover && "hover:bg-bg-card-hover hover:border-accent/20 transition-all duration-200 cursor-pointer",
+        hover &&
+          "hover:bg-bg-card-hover hover:border-border-strong transition-all duration-200 cursor-pointer",
         onClick && "cursor-pointer",
         className
       )}
@@ -36,7 +45,12 @@ export function CardHeader({ children, className }: { children: ReactNode; class
 
 export function CardTitle({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <h3 className={cn("text-sm font-semibold text-text-secondary uppercase tracking-wider", className)}>
+    <h3
+      className={cn(
+        "text-2xs font-medium tracking-[0.08em] uppercase text-text-tertiary",
+        className
+      )}
+    >
       {children}
     </h3>
   );

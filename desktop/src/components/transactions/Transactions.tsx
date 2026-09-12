@@ -1,18 +1,41 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import { useAppStore } from "../../store/appStore";
-import Card from "../ui/Card";
 import Spinner from "../ui/Spinner";
 import Button from "../ui/Button";
 import Input from "../ui/Input";
 import Select from "../ui/Select";
-import { formatCurrency, formatDateTime } from "../../lib/format";
-import { ChevronLeft, ChevronRight, Search } from "lucide-react";
+import Badge from "../ui/Badge";
+import EmptyState from "../ui/EmptyState";
+import { Table, THead, TH, TR, TD } from "../ui/Table";
+import { formatCurrency, formatDateTime, formatNumber } from "../../lib/format";
+import { enumLabel, useI18n } from "../../i18n";
+import { ChevronLeft, ChevronRight, Search, ArrowLeftRight } from "lucide-react";
+
+const TYPE_FILTER_VALUES = [
+  "BUY",
+  "SELL",
+  "SAVINGS_PLAN",
+  "DISTRIBUTION",
+  "INTEREST",
+  "FEE",
+  "DEPOSIT",
+  "WITHDRAWAL",
+  "TRANSFER_IN",
+  "TRANSFER_OUT",
+];
 
 export default function Transactions() {
-  const navigate = useNavigate();
   const { activePortfolioId } = useAppStore();
+  const { t } = useI18n();
+
+  const typeFilterOptions = [
+    { value: "", label: t.common.allTypes },
+    ...TYPE_FILTER_VALUES.map((v) => ({ value: v, label: enumLabel(t.transactions.txTypes, v) })),
+  ];
+
+  const txLabel = (tx: any): string =>
+    enumLabel(t.transactions.txTypes, tx.security_transaction_type || tx.side || tx.type);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -32,9 +55,10 @@ export default function Transactions() {
         typeFilter: typeFilter ? [typeFilter] : undefined,
         searchTerm: searchTerm || undefined,
       });
-      const data = result as any;
-      setTransactions(data.transactions || []);
-      setNextCursor(data.nextCursor || null);
+      // sc --json wraps the payload in {resolution, result: {items, cursor}}.
+      const data = (result as any)?.result ?? {};
+      setTransactions(data.items ?? []);
+      setNextCursor(data.cursor ?? null);
     } catch {
     } finally {
       setLoading(false);
@@ -68,29 +92,14 @@ export default function Transactions() {
     setSearchTerm(searchInput);
   };
 
-  const typeFilters = [
-    { value: "", label: "All Types" },
-    { value: "buy", label: "Buy" },
-    { value: "sell", label: "Sell" },
-    { value: "distribution", label: "Distribution" },
-    { value: "savings_plan_execution", label: "Savings Plan" },
-    { value: "interest", label: "Interest" },
-    { value: "fee", label: "Fee" },
-    { value: "transfer_in", label: "Transfer In" },
-    { value: "transfer_out", label: "Transfer Out" },
-  ];
-
   return (
-    <div className="space-y-6 max-w-7xl">
+    <div className="space-y-8">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-text-primary">Transactions</h1>
-      </div>
-
-      {/* Filters */}
-      <div className="flex items-end gap-4">
-        <div className="flex-1 max-w-xs">
+        <h1 className="text-xl font-semibold text-text-primary tracking-tight">{t.transactions.title}</h1>
+        <div className="flex items-center gap-2">
           <Select
-            options={typeFilters}
+            className="w-44"
+            options={typeFilterOptions}
             value={typeFilter}
             onChange={(e) => {
               setTypeFilter(e.target.value);
@@ -98,114 +107,91 @@ export default function Transactions() {
               setCursor(null);
             }}
           />
-        </div>
-        <div className="flex-1 max-w-sm flex gap-2">
-          <Input
-            placeholder="Search transactions..."
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-          />
-          <Button variant="secondary" onClick={handleSearch} size="md">
-            <Search size={16} />
-          </Button>
+          <div className="relative">
+            <Search
+              size={14}
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary"
+            />
+            <Input
+              className="w-64 pl-9"
+              placeholder={t.transactions.searchPlaceholder}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+            />
+          </div>
         </div>
       </div>
 
-      {/* Table */}
-      <Card padding={false}>
-        {loading ? (
-          <div className="flex items-center justify-center py-16">
-            <Spinner size={28} />
-          </div>
-        ) : transactions.length === 0 ? (
-          <div className="text-center py-16">
-            <p className="text-sm text-text-secondary">No transactions found</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="text-left px-5 py-3 text-xs font-medium text-text-secondary uppercase tracking-wider">
-                    Date
-                  </th>
-                  <th className="text-left px-5 py-3 text-xs font-medium text-text-secondary uppercase tracking-wider">
-                    Type
-                  </th>
-                  <th className="text-left px-5 py-3 text-xs font-medium text-text-secondary uppercase tracking-wider">
-                    Security
-                  </th>
-                  <th className="text-right px-5 py-3 text-xs font-medium text-text-secondary uppercase tracking-wider">
-                    Quantity
-                  </th>
-                  <th className="text-right px-5 py-3 text-xs font-medium text-text-secondary uppercase tracking-wider">
-                    Price
-                  </th>
-                  <th className="text-right px-5 py-3 text-xs font-medium text-text-secondary uppercase tracking-wider">
-                    Amount
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map((tx: any) => (
-                  <tr
-                    key={tx.id}
-                    className="border-b border-border/50 hover:bg-bg-card-hover transition-colors cursor-pointer"
-                    onClick={() => navigate(`/transactions?id=${tx.id}`)}
-                  >
-                    <td className="px-5 py-3.5 text-sm text-text-secondary">
-                      {formatDateTime(tx.date)}
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-accent-dim text-accent capitalize">
-                        {tx.type?.replace(/_/g, " ") || "Unknown"}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <div>
-                        <p className="text-sm text-text-primary">{tx.securityName || "—"}</p>
-                        <p className="text-xs text-text-secondary">{tx.isin || "—"}</p>
-                      </div>
-                    </td>
-                    <td className="px-5 py-3.5 text-right text-sm text-text-primary">
-                      {tx.quantity || "—"}
-                    </td>
-                    <td className="px-5 py-3.5 text-right text-sm text-text-primary">
-                      {tx.price ? formatCurrency(parseFloat(tx.price)) : "—"}
-                    </td>
-                    <td className="px-5 py-3.5 text-right text-sm font-medium text-text-primary">
-                      {formatCurrency(parseFloat(tx.amount || "0"))}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Pagination */}
-        <div className="flex items-center justify-between px-5 py-3 border-t border-border">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handlePrev}
-            disabled={cursors.length === 0}
-          >
-            <ChevronLeft size={16} className="mr-1" />
-            Previous
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleNext}
-            disabled={!nextCursor}
-          >
-            Next
-            <ChevronRight size={16} className="ml-1" />
-          </Button>
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Spinner size={28} />
         </div>
-      </Card>
+      ) : transactions.length === 0 ? (
+        <EmptyState
+          icon={<ArrowLeftRight size={20} />}
+          title={t.transactions.emptyTitle}
+          description={t.transactions.emptyDesc}
+        />
+      ) : (
+        <Table>
+          <THead>
+            <TH>{t.transactions.colDate}</TH>
+            <TH>{t.transactions.colType}</TH>
+            <TH>{t.transactions.colDescription}</TH>
+            <TH align="right">{t.transactions.colQuantity}</TH>
+            <TH align="right">{t.transactions.colAmount}</TH>
+            <TH align="right">{t.transactions.colStatus}</TH>
+          </THead>
+          <tbody>
+            {transactions.map((tx: any) => (
+              <TR key={tx.id}>
+                <TD className="text-text-secondary whitespace-nowrap">
+                  {tx.last_event_datetime ? formatDateTime(tx.last_event_datetime) : "—"}
+                </TD>
+                <TD>
+                  <Badge>{txLabel(tx)}</Badge>
+                </TD>
+                <TD>
+                  <p className="text-sm text-text-primary">{tx.description || "—"}</p>
+                  {tx.isin && <p className="text-2xs text-text-tertiary">{tx.isin}</p>}
+                </TD>
+                <TD numeric className="text-text-secondary">
+                  {tx.quantity != null ? formatNumber(tx.quantity) : "—"}
+                </TD>
+                <TD numeric className="font-medium">
+                  {formatCurrency(tx.amount ?? 0, tx.currency || "EUR")}
+                </TD>
+                <TD numeric>
+                  <Badge
+                    variant={
+                      tx.status === "FILLED" || tx.status === "SETTLED" || tx.status === "CONFIRMED"
+                        ? "positive"
+                        : tx.status === "CANCELLED" || tx.status === "REJECTED" || tx.status === "EXPIRED"
+                          ? "negative"
+                          : "default"
+                    }
+                  >
+                    {enumLabel(t.transactions.statuses, tx.status)}
+                  </Badge>
+                </TD>
+              </TR>
+            ))}
+          </tbody>
+        </Table>
+      )}
+
+      {/* Pagination */}
+      <div className="flex items-center justify-between pt-2">
+        <Button variant="ghost" size="sm" onClick={handlePrev} disabled={cursors.length === 0}>
+          <ChevronLeft size={15} className="mr-1" />
+          {t.common.previous}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={handleNext} disabled={!nextCursor}>
+          {t.common.next}
+          <ChevronRight size={15} className="ml-1" />
+        </Button>
+      </div>
     </div>
   );
 }
