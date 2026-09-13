@@ -2,9 +2,7 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::PathBuf;
 
-#[cfg(windows)]
-use anyhow::anyhow;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 #[cfg(windows)]
@@ -20,6 +18,18 @@ const KEYRING_SERVICE: &str = "scalable.capital:scalable-cli";
 const SESSION_ACCOUNT: &str = "session";
 const SESSION_FILENAME: &str = "session.json";
 const KEYRING_PROBE_KEY: &str = "__sc_storage_probe__";
+const KEYRING_CHUNK_MANIFEST_PREFIX: &str = "__sc_chunked_v1__:";
+const KEYRING_MAX_CHUNKS: usize = 64;
+// Windows Credential Manager caps a credential blob at 2560 bytes, which is
+// 1280 UTF-16 code units. Session payloads carry several JWTs and routinely
+// exceed that, so oversized values are split across multiple credentials.
+#[cfg(windows)]
+const KEYRING_MAX_CHUNK_UTF16_UNITS: usize = 1024;
+#[cfg(not(windows))]
+const KEYRING_MAX_CHUNK_UTF16_UNITS: usize = 8192;
+// CRED_MAX_CREDENTIAL_BLOB_SIZE is 2560 bytes, and every code unit costs two.
+#[cfg(windows)]
+const _: () = assert!(KEYRING_MAX_CHUNK_UTF16_UNITS * 2 <= 2560);
 const ACTIVE_SESSION_LOCK_FILENAME: &str = "session.lock";
 
 pub const SECRET_STORAGE_UNAVAILABLE_PREFIX: &str =
@@ -118,8 +128,8 @@ impl KeyringStore {
     }
 }
 
-impl SecretStore for KeyringStore {
-    fn get(&self, key: &str) -> Result<Option<String>> {
+impl RawSecretStore for KeyringStore {
+    fn get_raw(&self, key: &str) -> Result<Option<String>> {
         let entry = keyring_entry(key)?;
         match entry.get_password() {
             Ok(value) => Ok(Some(value)),
@@ -128,13 +138,13 @@ impl SecretStore for KeyringStore {
         }
     }
 
-    fn set(&self, key: &str, value: &str) -> Result<()> {
+    fn set_raw(&self, key: &str, value: &str) -> Result<()> {
         let entry = keyring_entry(key)?;
         entry.set_password(value).map_err(map_keyring_error)?;
         Ok(())
     }
 
-    fn delete(&self, key: &str) -> Result<()> {
+    fn delete_raw(&self, key: &str) -> Result<()> {
         let entry = keyring_entry(key)?;
         match entry.delete_credential() {
             Ok(()) => Ok(()),
@@ -142,6 +152,148 @@ impl SecretStore for KeyringStore {
             Err(err) => Err(map_keyring_error(err)),
         }
     }
+}
+
+impl SecretStore for KeyringStore {
+    fn get(&self, key: &str) -> Result<Option<String>> {
+        chunked_get(self, key)
+    }
+
+    fn set(&self, key: &str, value: &str) -> Result<()> {
+        chunked_set(self, key, value, KEYRING_MAX_CHUNK_UTF16_UNITS)
+    }
+
+    fn delete(&self, key: &str) -> Result<()> {
+        chunked_delete(self, key)
+    }
+}
+
+/// Single-credential access to the OS secret store, without the chunking that
+/// keeps individual credentials inside platform size limits.
+trait RawSecretStore {
+    fn get_raw(&self, key: &str) -> Result<Option<String>>;
+    fn set_raw(&self, key: &str, value: &str) -> Result<()>;
+    fn delete_raw(&self, key: &str) -> Result<()>;
+}
+
+fn chunk_key(key: &str, index: usize) -> String {
+    format!("{key}.part{index}")
+}
+
+fn chunk_manifest(chunk_count: usize) -> String {
+    format!("{KEYRING_CHUNK_MANIFEST_PREFIX}{chunk_count}")
+}
+
+/// Returns the chunk count when `value` is a chunk manifest, or `None` when it
+/// is a plain single-credential payload.
+fn parse_chunk_manifest(value: &str) -> Option<Result<usize>> {
+    let count = value.strip_prefix(KEYRING_CHUNK_MANIFEST_PREFIX)?;
+    Some(match count.parse::<usize>() {
+        Ok(count) if (1..=KEYRING_MAX_CHUNKS).contains(&count) => Ok(count),
+        _ => Err(anyhow!(
+            "Stored secret is corrupt: chunk manifest '{value}' is invalid. Run 'sc login' again."
+        )),
+    })
+}
+
+fn utf16_units(value: &str) -> usize {
+    value.encode_utf16().count()
+}
+
+/// Splits `value` so that every chunk stays within `max_units` UTF-16 code
+/// units. Splits happen on character boundaries, so surrogate pairs stay
+/// within a single chunk.
+fn split_utf16_chunks(value: &str, max_units: usize) -> Vec<String> {
+    let max_units = max_units.max(1);
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_units = 0usize;
+
+    for character in value.chars() {
+        let character_units = character.len_utf16();
+        if current_units + character_units > max_units && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+            current_units = 0;
+        }
+        current.push(character);
+        current_units += character_units;
+    }
+
+    if chunks.is_empty() || !current.is_empty() {
+        chunks.push(current);
+    }
+
+    chunks
+}
+
+fn chunked_get<S: RawSecretStore>(store: &S, key: &str) -> Result<Option<String>> {
+    let value = match store.get_raw(key)? {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+
+    let chunk_count = match parse_chunk_manifest(&value) {
+        Some(count) => count?,
+        None => return Ok(Some(value)),
+    };
+
+    let mut combined = String::new();
+    for index in 0..chunk_count {
+        let chunk_key = chunk_key(key, index);
+        let chunk = store.get_raw(&chunk_key)?.ok_or_else(|| {
+            anyhow!(
+                "Stored secret is incomplete: chunk '{chunk_key}' is missing. Run 'sc login' again."
+            )
+        })?;
+        combined.push_str(&chunk);
+    }
+
+    Ok(Some(combined))
+}
+
+fn chunked_set<S: RawSecretStore>(
+    store: &S,
+    key: &str,
+    value: &str,
+    max_chunk_units: usize,
+) -> Result<()> {
+    if utf16_units(value) <= max_chunk_units {
+        store.set_raw(key, value)?;
+        return delete_chunks_from(store, key, 0);
+    }
+
+    let chunks = split_utf16_chunks(value, max_chunk_units);
+    if chunks.len() > KEYRING_MAX_CHUNKS {
+        return Err(anyhow!(
+            "Session payload is too large for OS secret storage ({} chunks, limit {KEYRING_MAX_CHUNKS}).",
+            chunks.len()
+        ));
+    }
+
+    for (index, chunk) in chunks.iter().enumerate() {
+        store.set_raw(&chunk_key(key, index), chunk)?;
+    }
+    store.set_raw(key, &chunk_manifest(chunks.len()))?;
+
+    delete_chunks_from(store, key, chunks.len())
+}
+
+fn chunked_delete<S: RawSecretStore>(store: &S, key: &str) -> Result<()> {
+    store.delete_raw(key)?;
+    delete_chunks_from(store, key, 0)
+}
+
+/// Removes chunk credentials left over from an earlier, longer value. Chunks
+/// are always written contiguously from index 0, so the first gap ends the run.
+fn delete_chunks_from<S: RawSecretStore>(store: &S, key: &str, start_index: usize) -> Result<()> {
+    for index in start_index..KEYRING_MAX_CHUNKS {
+        let chunk_key = chunk_key(key, index);
+        if store.get_raw(&chunk_key)?.is_none() {
+            break;
+        }
+        store.delete_raw(&chunk_key)?;
+    }
+    Ok(())
 }
 
 pub struct FileStore {
@@ -626,6 +778,248 @@ mod tests {
             .load_required_active()
             .expect_err("missing session should fail");
         assert!(err.to_string().contains("No active session"));
+    }
+
+    /// Credential store that mimics a platform blob limit, the way Windows
+    /// Credential Manager rejects secrets over 2560 bytes of UTF-16.
+    #[derive(Default)]
+    struct MemoryRawStore {
+        values: std::sync::Mutex<HashMap<String, String>>,
+        max_utf16_units: Option<usize>,
+    }
+
+    impl MemoryRawStore {
+        fn with_limit(max_utf16_units: usize) -> Self {
+            Self {
+                values: std::sync::Mutex::new(HashMap::new()),
+                max_utf16_units: Some(max_utf16_units),
+            }
+        }
+
+        fn keys(&self) -> Vec<String> {
+            let mut keys: Vec<String> = self.values.lock().expect("lock").keys().cloned().collect();
+            keys.sort();
+            keys
+        }
+    }
+
+    impl RawSecretStore for MemoryRawStore {
+        fn get_raw(&self, key: &str) -> Result<Option<String>> {
+            Ok(self.values.lock().expect("lock").get(key).cloned())
+        }
+
+        fn set_raw(&self, key: &str, value: &str) -> Result<()> {
+            if let Some(limit) = self.max_utf16_units
+                && utf16_units(value) > limit
+            {
+                return Err(anyhow!(
+                    "Value of 'password encoded as UTF-16' is longer than the platform limit of {} chars",
+                    limit * 2
+                ));
+            }
+            self.values
+                .lock()
+                .expect("lock")
+                .insert(key.to_string(), value.to_string());
+            Ok(())
+        }
+
+        fn delete_raw(&self, key: &str) -> Result<()> {
+            self.values.lock().expect("lock").remove(key);
+            Ok(())
+        }
+    }
+
+    fn long_session_payload() -> String {
+        let jwt = "a".repeat(1200);
+        serde_json::to_string(&StoredSession {
+            session: Session {
+                access_token: jwt.clone(),
+                refresh_token: Some(jwt.clone()),
+                id_token: Some(jwt),
+                ..sample_session()
+            },
+            ..sample_stored_session()
+        })
+        .expect("serialize session")
+    }
+
+    #[test]
+    fn chunked_set_stores_small_values_in_a_single_credential() {
+        let store = MemoryRawStore::default();
+
+        chunked_set(&store, SESSION_ACCOUNT, "{\"a\":1}", 64).expect("set");
+
+        assert_eq!(store.keys(), vec![SESSION_ACCOUNT.to_string()]);
+        assert_eq!(
+            chunked_get(&store, SESSION_ACCOUNT)
+                .expect("get")
+                .as_deref(),
+            Some("{\"a\":1}")
+        );
+    }
+
+    #[test]
+    fn chunked_set_splits_values_over_the_chunk_limit() {
+        let store = MemoryRawStore::default();
+        let value = "x".repeat(250);
+
+        chunked_set(&store, SESSION_ACCOUNT, &value, 100).expect("set");
+
+        assert_eq!(
+            store.keys(),
+            vec![
+                "session".to_string(),
+                "session.part0".to_string(),
+                "session.part1".to_string(),
+                "session.part2".to_string(),
+            ]
+        );
+        assert_eq!(
+            store.get_raw(SESSION_ACCOUNT).expect("manifest").as_deref(),
+            Some("__sc_chunked_v1__:3")
+        );
+        for index in 0..3 {
+            let chunk = store
+                .get_raw(&chunk_key(SESSION_ACCOUNT, index))
+                .expect("chunk")
+                .expect("chunk exists");
+            assert!(utf16_units(&chunk) <= 100);
+        }
+        assert_eq!(
+            chunked_get(&store, SESSION_ACCOUNT)
+                .expect("get")
+                .as_deref(),
+            Some(value.as_str())
+        );
+    }
+
+    #[test]
+    fn chunked_set_stores_session_within_windows_credential_blob_limit() {
+        // 2560-byte blob limit == 1280 UTF-16 code units.
+        let store = MemoryRawStore::with_limit(1280);
+        let payload = long_session_payload();
+        assert!(utf16_units(&payload) > 1280);
+
+        chunked_set(
+            &store,
+            SESSION_ACCOUNT,
+            &payload,
+            KEYRING_MAX_CHUNK_UTF16_UNITS.min(1024),
+        )
+        .expect("oversized session should be stored in chunks");
+
+        assert_eq!(
+            chunked_get(&store, SESSION_ACCOUNT)
+                .expect("get")
+                .as_deref(),
+            Some(payload.as_str())
+        );
+    }
+
+    #[test]
+    fn chunked_set_removes_stale_chunks_when_the_value_shrinks() {
+        let store = MemoryRawStore::default();
+        chunked_set(&store, SESSION_ACCOUNT, &"x".repeat(250), 100).expect("set long");
+
+        chunked_set(&store, SESSION_ACCOUNT, "{\"a\":1}", 100).expect("set short");
+
+        assert_eq!(store.keys(), vec![SESSION_ACCOUNT.to_string()]);
+        assert_eq!(
+            chunked_get(&store, SESSION_ACCOUNT)
+                .expect("get")
+                .as_deref(),
+            Some("{\"a\":1}")
+        );
+    }
+
+    #[test]
+    fn chunked_set_removes_chunks_left_over_from_a_longer_value() {
+        let store = MemoryRawStore::default();
+        chunked_set(&store, SESSION_ACCOUNT, &"x".repeat(500), 100).expect("set long");
+
+        chunked_set(&store, SESSION_ACCOUNT, &"y".repeat(250), 100).expect("set shorter");
+
+        assert_eq!(
+            store.keys(),
+            vec![
+                "session".to_string(),
+                "session.part0".to_string(),
+                "session.part1".to_string(),
+                "session.part2".to_string(),
+            ]
+        );
+        assert_eq!(
+            chunked_get(&store, SESSION_ACCOUNT)
+                .expect("get")
+                .as_deref(),
+            Some("y".repeat(250).as_str())
+        );
+    }
+
+    #[test]
+    fn chunked_delete_removes_manifest_and_chunks() {
+        let store = MemoryRawStore::default();
+        chunked_set(&store, SESSION_ACCOUNT, &"x".repeat(250), 100).expect("set");
+
+        chunked_delete(&store, SESSION_ACCOUNT).expect("delete");
+
+        assert!(store.keys().is_empty());
+        assert!(chunked_get(&store, SESSION_ACCOUNT).expect("get").is_none());
+    }
+
+    #[test]
+    fn chunked_get_reads_values_written_before_chunking() {
+        let store = MemoryRawStore::default();
+        store
+            .set_raw(SESSION_ACCOUNT, "{\"legacy\":true}")
+            .expect("write legacy value");
+
+        assert_eq!(
+            chunked_get(&store, SESSION_ACCOUNT)
+                .expect("get")
+                .as_deref(),
+            Some("{\"legacy\":true}")
+        );
+    }
+
+    #[test]
+    fn chunked_get_reports_a_missing_chunk() {
+        let store = MemoryRawStore::default();
+        chunked_set(&store, SESSION_ACCOUNT, &"x".repeat(250), 100).expect("set");
+        store
+            .delete_raw(&chunk_key(SESSION_ACCOUNT, 1))
+            .expect("drop chunk");
+
+        let err = chunked_get(&store, SESSION_ACCOUNT).expect_err("missing chunk should fail");
+        assert!(err.to_string().contains("session.part1"));
+        assert!(err.to_string().contains("sc login"));
+    }
+
+    #[test]
+    fn chunked_get_reports_an_invalid_manifest() {
+        let store = MemoryRawStore::default();
+        store
+            .set_raw(SESSION_ACCOUNT, "__sc_chunked_v1__:not-a-number")
+            .expect("write manifest");
+
+        let err = chunked_get(&store, SESSION_ACCOUNT).expect_err("invalid manifest should fail");
+        assert!(err.to_string().contains("chunk manifest"));
+    }
+
+    #[test]
+    fn split_utf16_chunks_keeps_surrogate_pairs_intact() {
+        let value = "ab\u{1F600}cd";
+        let chunks = split_utf16_chunks(value, 3);
+
+        assert_eq!(
+            chunks,
+            vec!["ab".to_string(), "\u{1F600}c".to_string(), "d".to_string()]
+        );
+        assert_eq!(chunks.concat(), value);
+        for chunk in &chunks {
+            assert!(utf16_units(chunk) <= 3);
+        }
     }
 
     #[test]
