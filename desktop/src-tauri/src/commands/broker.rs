@@ -3,13 +3,19 @@ use crate::validate;
 use serde_json::Value;
 
 #[tauri::command]
-pub async fn get_broker_overview(portfolio_id: Option<String>) -> Result<Value, String> {
+pub async fn get_broker_overview(
+    portfolio_id: Option<String>,
+    include_year_to_date: Option<bool>,
+) -> Result<Value, String> {
     validate::opt(&portfolio_id, |v| validate::ident(v, "portfolio id"))?;
 
     let mut args = vec!["broker", "overview"];
     if let Some(id) = &portfolio_id {
         args.push("--portfolio-id");
         args.push(id);
+    }
+    if include_year_to_date.unwrap_or(false) {
+        args.push("--include-year-to-date");
     }
     run_sc_command(&args).await.map_err(|e| e.to_string())
 }
@@ -42,8 +48,10 @@ pub async fn get_broker_cash_breakdown(portfolio_id: Option<String>) -> Result<V
 pub async fn get_holdings(
     portfolio_id: Option<String>,
     include_year_to_date: Option<bool>,
+    quote_source: Option<String>,
 ) -> Result<Value, String> {
     validate::opt(&portfolio_id, |v| validate::ident(v, "portfolio id"))?;
+    validate::opt(&quote_source, |v| validate::code(v, "quote source"))?;
 
     let mut args = vec!["broker", "holdings"];
     if let Some(id) = &portfolio_id {
@@ -52,6 +60,10 @@ pub async fn get_holdings(
     }
     if include_year_to_date.unwrap_or(false) {
         args.push("--include-year-to-date");
+    }
+    if let Some(qs) = &quote_source {
+        args.push("--quote-source");
+        args.push(qs);
     }
     run_sc_command(&args).await.map_err(|e| e.to_string())
 }

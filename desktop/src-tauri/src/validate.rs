@@ -24,6 +24,144 @@ pub fn timeframe(value: &str) -> Result<(), String> {
     )
 }
 
+/// Savings-plan frequency as accepted by `sc broker savings-plans add --frequency`.
+pub fn savings_plan_frequency(value: &str) -> Result<(), String> {
+    one_of(
+        value,
+        &[
+            "monthly",
+            "bi-monthly",
+            "quarterly",
+            "semi-annually",
+            "annually",
+        ],
+        "frequency",
+    )
+}
+
+/// Savings-plan payment method as accepted by `--payment-method`.
+pub fn savings_plan_payment_method(value: &str) -> Result<(), String> {
+    one_of(
+        value,
+        &[
+            "reference-account",
+            "buying-power-with-reference-account-fallback",
+        ],
+        "payment method",
+    )
+}
+
+/// Derivative product type as accepted by `sc broker derivatives search --type`.
+pub fn derivative_type(value: &str) -> Result<(), String> {
+    one_of(value, &["knockout", "warrant", "factor"], "derivative type")
+}
+
+/// Derivative strategy as accepted by `--strategy`.
+pub fn derivative_strategy(value: &str) -> Result<(), String> {
+    one_of(value, &["long", "short", "put", "call"], "strategy")
+}
+
+/// Derivative issuer as accepted by `--issuer` (repeatable).
+pub fn derivative_issuer(value: &str) -> Result<(), String> {
+    one_of(
+        value,
+        &[
+            "goldman-sachs",
+            "hsbc",
+            "hvb",
+            "bnp",
+            "vontobel",
+            "morgan-stanley",
+            "soc-gen",
+        ],
+        "issuer",
+    )
+}
+
+/// Knockout product subcategory as accepted by `--product-subcategory`.
+pub fn derivative_subcategory(value: &str) -> Result<(), String> {
+    one_of(value, &["mini-future", "turbo"], "product subcategory")
+}
+
+/// Derivative sort field as accepted by `--sort-field`.
+pub fn derivative_sort_field(value: &str) -> Result<(), String> {
+    one_of(
+        value,
+        &[
+            "strike",
+            "leverage",
+            "expiry-date",
+            "knockout-barrier",
+            "distance-to-knockout",
+            "premium-absolute",
+            "premium-relative",
+            "distance-to-strike",
+            "omega",
+            "delta",
+            "implied-volatility",
+            "factor",
+        ],
+        "sort field",
+    )
+}
+
+/// Sort order as accepted by `--sort-order`.
+pub fn sort_order(value: &str) -> Result<(), String> {
+    one_of(value, &["asc", "desc"], "sort order")
+}
+
+/// Day of month as accepted by `sc broker savings-plans add --day-of-month`
+/// (clap range `1..=31`).
+pub fn day_of_month(value: u8) -> Result<(), String> {
+    if (1..=31).contains(&value) {
+        Ok(())
+    } else {
+        Err("Invalid day of month: expected 1–31".to_string())
+    }
+}
+
+/// `YYYY-MM` calendar month as accepted by `--year-month`.
+pub fn year_month(value: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    let ok = bytes.len() == 7
+        && bytes[..4].iter().all(u8::is_ascii_digit)
+        && bytes[4] == b'-'
+        && bytes[5..].iter().all(u8::is_ascii_digit)
+        && matches!(&value[5..], "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09" | "10" | "11" | "12");
+    if ok {
+        Ok(())
+    } else {
+        Err("Invalid year-month: expected YYYY-MM".to_string())
+    }
+}
+
+/// `YYYY-MM-DD` calendar date as accepted by `--expiry-from` / `--expiry-to`.
+pub fn date(value: &str, name: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    let shape = bytes.len() == 10
+        && bytes[..4].iter().all(u8::is_ascii_digit)
+        && bytes[4] == b'-'
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[7] == b'-'
+        && bytes[8..].iter().all(u8::is_ascii_digit);
+    if !shape {
+        return Err(format!("Invalid {name}: expected YYYY-MM-DD"));
+    }
+    let month: u8 = value[5..7].parse().map_err(|_| format!("Invalid {name}"))?;
+    let day: u8 = value[8..].parse().map_err(|_| format!("Invalid {name}"))?;
+    if (1..=12).contains(&month) && (1..=31).contains(&day) {
+        Ok(())
+    } else {
+        Err(format!("Invalid {name}: expected YYYY-MM-DD"))
+    }
+}
+
+/// Signed decimal (derivative delta/omega bounds can be negative).
+pub fn signed_decimal(value: &str, name: &str) -> Result<(), String> {
+    let body = value.strip_prefix('-').unwrap_or(value);
+    decimal(body, name)
+}
+
 /// News locale: the UI only ever requests these two.
 pub fn locale(value: &str) -> Result<(), String> {
     one_of(value, &["de_DE", "en_DE"], "locale")

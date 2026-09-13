@@ -3,6 +3,7 @@ use crate::validate;
 use serde_json::Value;
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn get_transactions(
     portfolio_id: Option<String>,
     page_size: Option<u16>,
@@ -11,13 +12,18 @@ pub async fn get_transactions(
     status: Option<Vec<String>>,
     search_term: Option<String>,
     isin: Option<String>,
+    from_time: Option<String>,
+    to_time: Option<String>,
+    include_reinvestment_subtypes: Option<bool>,
 ) -> Result<Value, String> {
     validate::opt(&portfolio_id, |v| validate::ident(v, "portfolio id"))?;
     validate::opt(&cursor, |v| validate::ident(v, "cursor"))?;
     validate::opt_each(&type_filter, |v| validate::code(v, "type filter"))?;
     validate::opt_each(&status, |v| validate::code(v, "status"))?;
     validate::opt(&search_term, |v| validate::text(v, "search term", 200))?;
-    validate::opt(&isin, |v| validate::isin(v))?;
+    validate::opt(&isin, validate::isin)?;
+    validate::opt(&from_time, |v| validate::time_like(v, "from time"))?;
+    validate::opt(&to_time, |v| validate::time_like(v, "to time"))?;
 
     // Owned string must outlive `args` (Vec<&str>).
     let page_size_arg = page_size.map(|ps| ps.to_string());
@@ -54,6 +60,17 @@ pub async fn get_transactions(
     if let Some(i) = &isin {
         args.push("--isin");
         args.push(i);
+    }
+    if let Some(ft) = &from_time {
+        args.push("--from-time");
+        args.push(ft);
+    }
+    if let Some(tt) = &to_time {
+        args.push("--to-time");
+        args.push(tt);
+    }
+    if include_reinvestment_subtypes.unwrap_or(false) {
+        args.push("--include-reinvestment-subtypes");
     }
     run_sc_command(&args).await.map_err(|e| e.to_string())
 }

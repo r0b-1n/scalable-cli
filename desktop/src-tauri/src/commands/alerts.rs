@@ -27,7 +27,7 @@ pub async fn add_price_alert(
     price: String,
     portfolio_id: Option<String>,
 ) -> Result<Value, String> {
-    validate::opt(&isin, |v| validate::isin(v))?;
+    validate::opt(&isin, validate::isin)?;
     validate::opt(&ticker, |v| validate::code(v, "ticker"))?;
     validate::decimal(&price, "price")?;
     validate::opt(&portfolio_id, |v| validate::ident(v, "portfolio id"))?;
