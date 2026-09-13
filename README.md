@@ -70,6 +70,9 @@ Selenium, browser scraping, or brittle UI scripts.
 
 Works in both Command Prompt (`cmd`) and PowerShell. Login sessions are stored in the
 Windows Credential Manager by default; local files live under `%APPDATA%\scalable-cli`.
+Credential Manager caps a single credential at 2560 bytes, so a session that exceeds it
+is split across several `scalable.capital:scalable-cli` entries (`session`, `session.part0`, ...)
+and reassembled on read.
 The `secure_enclave` signing backend remains macOS-only and `pkcs11` remains Linux-only.
 
 ### Official binaries and source builds
