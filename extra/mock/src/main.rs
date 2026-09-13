@@ -1,5 +1,9 @@
 mod auth;
+mod catalog;
+mod fixtures;
 mod graphql;
+mod pricing;
+mod rng;
 mod state;
 
 use auth::{AuthState, SharedAuth};
@@ -10,6 +14,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use chrono::Utc;
 use clap::Parser;
 use serde_json::json;
 use state::{MockState, SharedState};
@@ -25,9 +30,15 @@ struct Args {
     port: u16,
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
-    #[arg(long)]
-    seed: Option<u64>,
+    /// Deterministic dataset seed. Same seed (and roughly the same day) => same generated
+    /// portfolios/transactions/prices. Defaults to a fixed constant so a plain run is
+    /// reproducible without having to remember to pass `--seed`.
+    #[arg(long, default_value_t = DEFAULT_SEED)]
+    seed: u64,
 }
+
+/// Fixed default so `scalable-mock` with no `--seed` flag is still fully reproducible.
+const DEFAULT_SEED: u64 = 20_260_913;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -53,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     let audience = "https://de.scalable.capital/api-gateway".to_string();
     let client_id = "yBM3BrpRgwSTJZRdJllvtD6jJEmyxWfE".to_string();
 
-    let mock_state: SharedState = Arc::new(RwLock::new(MockState::new()));
+    let mock_state: SharedState = Arc::new(RwLock::new(MockState::new(args.seed, Utc::now())));
     let auth_state: SharedAuth = Arc::new(RwLock::new(AuthState::new(
         issuer.clone(),
         audience.clone(),
@@ -64,15 +75,16 @@ async fn main() -> anyhow::Result<()> {
     println!("  issuer:      {}", issuer);
     println!("  graphql_url: {}", graphql_url);
     println!("  audience:    {}", audience);
+    println!("  seed:        {}", args.seed);
     println!("  client_id:   {}", client_id);
     println!("  listening:   http://{}", addr);
-    println!("");
+    println!();
     println!("Configure scalable-cli to use this mock:");
     println!("  $env:SC_MOCK=\"1\"            # enables http + mock issuer");
     println!("  $env:SC_MOCK_PORT=\"{}\"      # optional, default 4010", args.port);
     println!("  $env:SC_CONFIG_DIR=\"/tmp/sc-mock\" # isolated config");
     println!("  cargo run -- --help");
-    println!("");
+    println!();
 
     let combined_state = AppState {
         mock: mock_state,

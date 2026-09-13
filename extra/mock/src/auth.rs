@@ -204,13 +204,13 @@ pub async fn token_handler(
                 "expires_in": 3600,
                 "token_type": "Bearer"
             });
-            return (StatusCode::OK, Json(body)).into_response();
+            (StatusCode::OK, Json(body)).into_response()
         } else {
             let body = json!({
                 "error": "expired_token",
                 "error_description": "Device code expired"
             });
-            return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+            (StatusCode::BAD_REQUEST, Json(body)).into_response()
         }
     } else if grant_type == "refresh_token" {
         let auth_read = auth.read().await;
@@ -233,13 +233,13 @@ pub async fn token_handler(
             "expires_in": 3600,
             "token_type": "Bearer"
         });
-        return (StatusCode::OK, Json(body)).into_response();
+        (StatusCode::OK, Json(body)).into_response()
     } else {
         let body = json!({
             "error": "unsupported_grant_type",
             "error_description": format!("Grant type {} not supported", grant_type)
         });
-        return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+        (StatusCode::BAD_REQUEST, Json(body)).into_response()
     }
 }
 

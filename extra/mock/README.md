@@ -10,9 +10,37 @@ Run the CLI against this mock exactly like against the official platform (`https
 - **Broker reads:** `overview`, `analytics`, `cash-breakdown`, `holdings`, `watchlist`, `search`, `derivatives search`, `quote`, `chart`, `security-news`, `price-alerts` (+crypto), `transactions` (+fingerprint), `transaction details`, `portfolio-groups`, `savings-plans`, `overnight` (`DiscoverOvernightAccounts` / `OvernightSummary` / `OvernightTransactions`)
 - **Broker writes:** `watchlist add/remove`, `price-alerts add/remove`, `savings-plans add/config/remove` (2-phase `scsp1_` with locks), `portfolio-groups create/update/delete/assign/unassign`
 - **Trading:** `getTradingTradability` → `getSecurityTick` → `getSingleTradeExAnteCost` (+ `getBrokerAppropriatenessWarning` / `createFillForecast`) → `placeOrder` with `X-SC-Idempotency-Id` → `cancelOrder` (`scb1_` confirmations, `900s` TTL, checksum validation)
-- Deterministic fixtures (Apple `US0378331005`, iShares `IE00B4L5Y983`, Tesla `US88160R1014`, etc.), pagination, filtering, sorting
 
 All responses match the projections in `src/broker_projections.rs` / `src/trade.rs` so `sc --json` output is identical in shape to production.
+
+## The dataset
+
+The mock serves one coherent account rather than a handful of disconnected fixtures. Everything
+is generated deterministically from a seed (`--seed`, default `20260913`), so a given seed always
+produces the same portfolio.
+
+- **42 instruments** — 24 equities (German blue chips, US mega-caps, European names), 10 ETFs
+  (accumulating and distributing, plus bond, money-market and gold), 3 crypto coins and 5
+  knockout/warrant derivatives, each with a real-shaped ISIN, WKN, symbol, sector, region,
+  currency, volatility and dividend policy.
+- **Two portfolios, ~16 holdings** with fractional share counts, because positions are *derived
+  from* the transaction history rather than declared independently.
+- **~100 transactions over three years** — buys, sells, monthly savings-plan executions,
+  dividends with withholding tax, interest, deposits, withdrawals, fees, plus a pending and a
+  cancelled order.
+- **Derived aggregates.** Portfolio valuation is the sum of its holdings, cash is folded from
+  every settled transaction, and group performance is computed from the group's actual members.
+  USD positions are converted at a fixed mock FX rate for account-currency figures.
+- **A real price engine.** Each instrument follows a seeded geometric brownian walk anchored so
+  that the last chart point equals its quote. Timeframes differ properly — intraday steps within
+  trading hours, daily series that skip weekends for equities, weekly over five years for `max` —
+  and crypto trades 24/7.
+- **A working order lifecycle.** A market order fills, updates the holding's quantity and FIFO
+  price and moves cash; a limit or stop order stays `PENDING` until cancelled. Repeating an
+  `X-SC-Idempotency-Id` returns the original order instead of placing a second one.
+- **Filters that filter.** `transactions` honours type, status, ISIN, search term, time window,
+  reinvestment subtypes and cursor pagination; `derivatives search` honours every one of its
+  filters, ranges and sort orders.
 
 ## Quick start
 
@@ -76,5 +104,10 @@ Kept fully isolated under `extra/mock` so the main crate stays lean. No workspac
 
 - Rust + Axum + Tokio
 - RSA 2048 key generated at startup, `/.well-known/openid-configuration` + `/jwks` for `RS256` verification (`src/token_verifier.rs`)
-- In-memory `MockState` (`state.rs`) with `RwLock`, deterministic fixtures
-- GraphQL dispatcher (`graphql.rs`) by `operationName` / query substring
+- In-memory `MockState` (`state.rs`) behind an `RwLock`, built by `fixtures.rs` from a seed
+- `rng.rs` — dependency-free SplitMix64 + xoshiro256\*\* PRNG, keyed per instrument so generation
+  order never changes a value
+- `catalog.rs` — the instrument universe; `pricing.rs` — price series, spreads and performance
+- GraphQL dispatcher (`graphql.rs`) keyed on the request's `operation_name` (the CLI sends it
+  snake_case) with an `operationName` and query-substring fallback; unknown operations return a
+  GraphQL error rather than a silent `data: null`
