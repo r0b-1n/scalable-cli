@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "sidecar": "node scripts/stage-sidecar.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

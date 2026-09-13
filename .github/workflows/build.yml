@@ -1,0 +1,383 @@
+name: Build
+
+# Builds every shippable component of this repository and publishes the
+# results as downloadable files on GitHub:
+#
+#   * CLI            (`sc`)              - Linux/macOS/Windows
+#   * Mock backend   (`scalable-mock`)   - Linux/macOS/Windows
+#   * Desktop app    (Tauri bundle)      - .deb/.rpm/.AppImage/.dmg/.msi/.exe
+#
+# Every run uploads the results as workflow artifacts (Actions -> run ->
+# "Artifacts"). Pushing a `v*` tag additionally creates a GitHub Release with
+# the same files attached, and a manual run can refresh the rolling `dev`
+# pre-release.
+
+on:
+  push:
+    branches:
+      - main
+      - dev-main
+      - "feature/**"
+      - "release/**"
+      - "claude/**"
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+      - dev-main
+  workflow_dispatch:
+    inputs:
+      publish_dev_release:
+        description: "Publish the build as the rolling 'dev' pre-release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # ---------------------------------------------------------------- CLI ----
+  cli:
+    name: CLI (${{ matrix.slug }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slug: linux-x86_64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - slug: linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - slug: macos-aarch64
+            os: macos-15
+            target: aarch64-apple-darwin
+          - slug: macos-x86_64
+            os: macos-15
+            target: x86_64-apple-darwin
+          - slug: windows-x86_64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "Pinned toolchain: $toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --target "${{ matrix.target }}" --no-self-update
+          rustup default "$toolchain"
+
+      - name: Build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: cli-${{ matrix.target }}
+
+      - name: Build sc
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # Cross-compiled x86_64 binaries cannot run on the arm64 macOS runner.
+      - name: Smoke test
+        if: matrix.slug != 'macos-x86_64'
+        shell: bash
+        run: ./target/${{ matrix.target }}/release/sc${{ runner.os == 'Windows' && '.exe' || '' }} --version
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' Cargo.toml | head -n1)
+          name="sc-${version}-${{ matrix.slug }}"
+          mkdir -p staging/"$name" dist
+          cp README.md LICENSE staging/"$name"/
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/${{ matrix.target }}/release/sc.exe staging/"$name"/
+            powershell -Command "Compress-Archive -Path 'staging/$name/*' -DestinationPath 'dist/$name.zip'"
+          else
+            cp target/${{ matrix.target }}/release/sc staging/"$name"/
+            tar -czf "dist/$name.tar.gz" -C staging "$name"
+          fi
+          ls -l dist
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-cli-${{ matrix.slug }}
+          path: dist/*
+          if-no-files-found: error
+
+      # Consumed by the desktop job, which ships `sc` inside the app bundle.
+      - name: Upload raw binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-cli-${{ matrix.slug }}
+          path: |
+            target/${{ matrix.target }}/release/sc
+            target/${{ matrix.target }}/release/sc.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  # -------------------------------------------------------- Mock backend ----
+  mock:
+    name: Mock backend (${{ matrix.slug }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slug: linux-x86_64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - slug: linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - slug: macos-aarch64
+            os: macos-15
+            target: aarch64-apple-darwin
+          - slug: macos-x86_64
+            os: macos-15
+            target: x86_64-apple-darwin
+          - slug: windows-x86_64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$toolchain" --profile minimal --target "${{ matrix.target }}" --no-self-update
+          rustup default "$toolchain"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "extra/mock -> target"
+          key: mock-${{ matrix.target }}
+
+      - name: Build scalable-mock
+        run: cargo build --release --locked --manifest-path extra/mock/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Smoke test
+        if: matrix.slug != 'macos-x86_64'
+        shell: bash
+        run: ./extra/mock/target/${{ matrix.target }}/release/scalable-mock${{ runner.os == 'Windows' && '.exe' || '' }} --help
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' extra/mock/Cargo.toml | head -n1)
+          name="scalable-mock-${version}-${{ matrix.slug }}"
+          mkdir -p staging/"$name" dist
+          cp extra/mock/README.md staging/"$name"/
+          cp LICENSE staging/"$name"/
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp extra/mock/target/${{ matrix.target }}/release/scalable-mock.exe staging/"$name"/
+            powershell -Command "Compress-Archive -Path 'staging/$name/*' -DestinationPath 'dist/$name.zip'"
+          else
+            cp extra/mock/target/${{ matrix.target }}/release/scalable-mock staging/"$name"/
+            tar -czf "dist/$name.tar.gz" -C staging "$name"
+          fi
+          ls -l dist
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-mock-${{ matrix.slug }}
+          path: dist/*
+          if-no-files-found: error
+
+  # -------------------------------------------------------- Desktop app ----
+  desktop:
+    name: Desktop (${{ matrix.slug }})
+    # The app launches the CLI from next to its own executable, so `sc` is
+    # bundled as a Tauri sidecar and has to be built first.
+    needs: cli
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slug: linux-x86_64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+          - slug: linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: deb,rpm
+          - slug: macos-aarch64
+            os: macos-15
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - slug: macos-x86_64
+            os: macos-15
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+          - slug: windows-x86_64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+            bundles: msi,nsis
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$toolchain" --profile minimal --target "${{ matrix.target }}" --no-self-update
+          rustup default "$toolchain"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install Tauri system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "desktop/src-tauri -> target"
+          key: desktop-${{ matrix.target }}
+
+      - name: Download sc binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bin-cli-${{ matrix.slug }}
+          path: sc-bin
+
+      - name: Stage sc as Tauri sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p desktop/src-tauri/binaries
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp sc-bin/sc.exe "desktop/src-tauri/binaries/sc-${{ matrix.target }}.exe"
+          else
+            cp sc-bin/sc "desktop/src-tauri/binaries/sc-${{ matrix.target }}"
+            chmod +x "desktop/src-tauri/binaries/sc-${{ matrix.target }}"
+          fi
+          ls -l desktop/src-tauri/binaries
+
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build desktop bundles
+        working-directory: desktop
+        run: npm run tauri -- build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: Collect bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          bundle_dir="desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+          find "$bundle_dir" -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+               -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) \
+            -exec cp {} dist/ \;
+          # Release assets must not contain spaces ("Scalable Desktop_1.0.0...").
+          for file in dist/*; do
+            sanitized=$(echo "$file" | tr ' ' '-')
+            [ "$file" = "$sanitized" ] || mv "$file" "$sanitized"
+          done
+          ls -l dist
+          [ -n "$(ls -A dist)" ] || { echo "no desktop bundles produced"; exit 1; }
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-desktop-${{ matrix.slug }}
+          path: dist/*
+          if-no-files-found: error
+
+  # ------------------------------------------------------------ Release ----
+  release:
+    name: Publish release
+    needs: [cli, mock, desktop]
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_dev_release)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Generate checksums
+        working-directory: release-assets
+        run: |
+          set -euo pipefail
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            release-assets/*
+
+      - name: Refresh rolling dev pre-release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_dev_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release delete dev --cleanup-tag --yes || true
+          gh release create dev \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Development build" \
+            --notes "Unsigned development build from \`${GITHUB_REF_NAME}\` (\`${GITHUB_SHA}\`), built by run [${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})." \
+            release-assets/*

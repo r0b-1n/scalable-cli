@@ -2,3 +2,6 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/
+
+# sc sidecar staged for bundling (see scripts/stage-sidecar.mjs)
+src-tauri/binaries/
