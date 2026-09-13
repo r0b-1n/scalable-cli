@@ -12,7 +12,7 @@ export default function Badge({ children, variant = "default", className }: Badg
       className={cn(
         "inline-flex items-center rounded-full px-2 py-0.5 text-2xs font-medium",
         {
-          "bg-white/5 text-text-secondary": variant === "default",
+          "bg-hover text-text-secondary": variant === "default",
           "bg-accent-dim text-accent": variant === "accent",
           "bg-positive/15 text-positive": variant === "positive",
           "bg-negative/15 text-negative": variant === "negative",

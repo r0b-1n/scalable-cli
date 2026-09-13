@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { recordCliCall } from "../lib/cliLog";
 import type {
   WhoamiData,
   OvernightData,
@@ -17,42 +18,87 @@ import type {
   SavingsPlansData,
   SavingsPlanConfigData,
   TradePreviewData,
+  SavingsPlanPreviewData,
   TradeSubmitData,
   TradeCancelData,
   SearchData,
   DerivativesData,
   PortfolioGroupsData,
   CapabilitiesData,
+  BrokerContextData,
+  BrokerPortfolioListData,
+  ChartTimeframe,
+  NewsLocale,
+  DerivativeType,
+  DerivativeStrategy,
+  DerivativeIssuer,
+  DerivativeSubcategory,
+  DerivativeSortField,
+  SortOrder,
+  SavingsPlanFrequency,
+  SavingsPlanPaymentMethod,
+  OrderType,
+  TradeSide,
 } from "./types";
 
 // The Rust side already unwraps the sc MachineEnvelope: commands resolve
 // with the envelope's `data` and reject with a message string (hints
 // included) when the CLI reports an error.
-async function invokeSc<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+//
+// Every call is also recorded in the in-memory CLI log so the UI can show
+// which `sc` invocation produced the data on screen — the CLI is the product,
+// and the app should never look like a parallel implementation of it.
+async function invokeSc<T>(
+  command: string,
+  args?: Record<string, unknown>
+): Promise<T> {
+  const started = Date.now();
   try {
-    return await invoke<T>(command, args);
+    const result = await invoke<T>(command, args);
+    recordCliCall({ command, args, startedAt: started, ok: true });
+    return result;
   } catch (e) {
-    throw e instanceof Error ? e : new Error(String(e));
+    const error = e instanceof Error ? e : new Error(String(e));
+    recordCliCall({
+      command,
+      args,
+      startedAt: started,
+      ok: false,
+      error: error.message,
+    });
+    throw error;
   }
 }
 
+/** Shared read options accepted by the quote-backed list commands. */
+export interface QuoteReadOptions {
+  portfolioId?: string;
+  includeYearToDate?: boolean;
+  quoteSource?: string;
+}
+
 export const api = {
-  login: () => invokeSc<void>("login"),
+  // ---------------------------------------------------------------- session
+  /**
+   * `sc login` — interactive device-code flow. `localReadOnly` maps to
+   * `--local-read-only`, which stores the session in a locally enforced
+   * read-only mode: reads keep working, writes are blocked by the CLI until
+   * the user logs in again without it. It does not change token permissions
+   * or backend access.
+   */
+  login: (localReadOnly = false) => invokeSc<void>("login", { localReadOnly }),
   logout: () => invokeSc<void>("logout"),
   getWhoami: () => invokeSc<WhoamiData>("get_whoami"),
   getCapabilities: () => invokeSc<CapabilitiesData>("get_capabilities"),
 
-  getBrokerContext: () =>
-    invokeSc<{ context: { account_id: string; portfolio_id: string | null } | null }>(
-      "get_broker_context"
-    ),
+  // ---------------------------------------------------------------- context
+  getBrokerContext: () => invokeSc<BrokerContextData>("get_broker_context"),
   listBrokerPortfolios: () =>
-    invokeSc<{ account_id: string; portfolios: string[]; selected_portfolio_id: string | null }>(
-      "list_broker_portfolios"
-    ),
+    invokeSc<BrokerPortfolioListData>("list_broker_portfolios"),
   selectBrokerContext: (portfolioId: string) =>
     invokeSc<void>("select_broker_context", { portfolioId }),
 
+  // -------------------------------------------------------------- overnight
   getOvernight: (savingsAccountId?: string) =>
     invokeSc<OvernightData>("get_overnight", { savingsAccountId }),
   getOvernightTransactions: (params: {
@@ -61,16 +107,28 @@ export const api = {
     cursor?: string;
     typeFilter?: string[];
     searchTerm?: string;
+    fromTime?: string;
+    toTime?: string;
   }) => invokeSc<OvernightTransactionsData>("get_overnight_transactions", params),
 
-  getBrokerOverview: (portfolioId?: string) =>
-    invokeSc<BrokerOverviewData>("get_broker_overview", { portfolioId }),
+  // ------------------------------------------------------------------ reads
+  getBrokerOverview: (portfolioId?: string, includeYearToDate = false) =>
+    invokeSc<BrokerOverviewData>("get_broker_overview", {
+      portfolioId,
+      includeYearToDate,
+    }),
   getBrokerAnalytics: (portfolioId?: string) =>
     invokeSc<BrokerAnalyticsData>("get_broker_analytics", { portfolioId }),
   getBrokerCashBreakdown: (portfolioId?: string) =>
-    invokeSc<BrokerCashBreakdownData>("get_broker_cash_breakdown", { portfolioId }),
-  getHoldings: (portfolioId?: string) =>
-    invokeSc<HoldingsData>("get_holdings", { portfolioId }),
+    invokeSc<BrokerCashBreakdownData>("get_broker_cash_breakdown", {
+      portfolioId,
+    }),
+  getHoldings: (opts: QuoteReadOptions = {}) =>
+    invokeSc<HoldingsData>("get_holdings", {
+      portfolioId: opts.portfolioId,
+      includeYearToDate: opts.includeYearToDate ?? false,
+      quoteSource: opts.quoteSource,
+    }),
 
   getTransactions: (params: {
     portfolioId?: string;
@@ -80,24 +138,77 @@ export const api = {
     status?: string[];
     searchTerm?: string;
     isin?: string;
+    fromTime?: string;
+    toTime?: string;
+    includeReinvestmentSubtypes?: boolean;
   }) => invokeSc<TransactionsData>("get_transactions", params),
   getTransactionDetail: (transactionId: string, portfolioId?: string) =>
-    invokeSc<TransactionDetailData>("get_transaction_detail", { transactionId, portfolioId }),
+    invokeSc<TransactionDetailData>("get_transaction_detail", {
+      transactionId,
+      portfolioId,
+    }),
 
-  getQuote: (isin: string, portfolioId?: string) =>
-    invokeSc<QuoteData>("get_quote", { isin, portfolioId }),
-  getChart: (isin: string, timeframe: string) =>
+  // ------------------------------------------------------------ market data
+  getQuote: (isin: string, opts: QuoteReadOptions = {}) =>
+    invokeSc<QuoteData>("get_quote", {
+      isin,
+      portfolioId: opts.portfolioId,
+      includeYearToDate: opts.includeYearToDate ?? false,
+      quoteSource: opts.quoteSource,
+    }),
+  getChart: (isin: string, timeframe: ChartTimeframe) =>
     invokeSc<ChartData>("get_chart", { isin, timeframe }),
-  getSecurityNews: (isin: string, locale?: string) =>
+  getSecurityNews: (isin: string, locale?: NewsLocale) =>
     invokeSc<SecurityNewsData>("get_security_news", { isin, locale }),
+  search: (query: string, opts: QuoteReadOptions = {}) =>
+    invokeSc<SearchData>("search_securities", {
+      query,
+      portfolioId: opts.portfolioId,
+      includeYearToDate: opts.includeYearToDate ?? false,
+      quoteSource: opts.quoteSource,
+    }),
 
-  getWatchlist: (portfolioId?: string) =>
-    invokeSc<WatchlistData>("get_watchlist", { portfolioId }),
+  /** Every filter `sc broker derivatives search` accepts. */
+  getDerivatives: (params: {
+    underlying: string;
+    derivativeType: DerivativeType;
+    strategy: DerivativeStrategy;
+    limit?: number;
+    offset?: number;
+    issuer?: DerivativeIssuer[];
+    productSubcategory?: DerivativeSubcategory[];
+    leverageMin?: string;
+    leverageMax?: string;
+    knockoutBarrierMin?: string;
+    knockoutBarrierMax?: string;
+    strikeMin?: string;
+    strikeMax?: string;
+    omegaMin?: string;
+    omegaMax?: string;
+    deltaMin?: string;
+    deltaMax?: string;
+    factorMin?: string;
+    factorMax?: string;
+    expiryFrom?: string;
+    expiryTo?: string;
+    sortField?: DerivativeSortField;
+    sortOrder?: SortOrder;
+    portfolioId?: string;
+  }) => invokeSc<DerivativesData>("search_derivatives", params),
+
+  // -------------------------------------------------------------- watchlist
+  getWatchlist: (opts: QuoteReadOptions = {}) =>
+    invokeSc<WatchlistData>("get_watchlist", {
+      portfolioId: opts.portfolioId,
+      includeYearToDate: opts.includeYearToDate ?? false,
+      quoteSource: opts.quoteSource,
+    }),
   addToWatchlist: (isin: string, portfolioId?: string) =>
     invokeSc<void>("add_to_watchlist", { isin, portfolioId }),
   removeFromWatchlist: (isin: string, portfolioId?: string) =>
     invokeSc<void>("remove_from_watchlist", { isin, portfolioId }),
 
+  // ----------------------------------------------------------- price alerts
   getPriceAlerts: (portfolioId?: string, activeOnly = false) =>
     invokeSc<PriceAlertsData>("get_price_alerts", { portfolioId, activeOnly }),
   addPriceAlert: (params: {
@@ -109,70 +220,78 @@ export const api = {
   removePriceAlert: (alertId: string, portfolioId?: string) =>
     invokeSc<void>("remove_price_alert", { alertId, portfolioId }),
 
+  // ---------------------------------------------------------- savings plans
   getSavingsPlans: (portfolioId?: string) =>
     invokeSc<SavingsPlansData>("get_savings_plans", { portfolioId }),
   getSavingsPlanConfig: (isin: string, portfolioId?: string) =>
-    invokeSc<SavingsPlanConfigData>("get_savings_plan_config", { isin, portfolioId }),
+    invokeSc<SavingsPlanConfigData>("get_savings_plan_config", {
+      isin,
+      portfolioId,
+    }),
+  /**
+   * Two-phase. Called without `confirm` this only previews and returns the
+   * full ex-ante cost disclosure plus a short-lived confirmation id; the UI
+   * must present that disclosure and take a separate affirmative confirmation
+   * before calling again with the same arguments plus `confirm`.
+   */
   addSavingsPlan: (params: {
     isin: string;
     amount: string;
-    frequency?: string;
+    frequency?: SavingsPlanFrequency;
+    dayOfMonth?: number;
+    yearMonth?: string;
+    dynamizationRate?: string;
+    paymentMethod?: SavingsPlanPaymentMethod;
+    appropriatenessId?: string;
+    acknowledgedAppropriatenessWarningVersion?: string;
     portfolioId?: string;
     confirm?: string;
-  }) => invokeSc<TradePreviewData>("add_savings_plan", params),
+  }) => invokeSc<SavingsPlanPreviewData>("add_savings_plan", params),
   removeSavingsPlan: (isin: string, portfolioId?: string) =>
     invokeSc<void>("remove_savings_plan", { isin, portfolioId }),
 
-  search: (query: string, portfolioId?: string) =>
-    invokeSc<SearchData>("search_securities", { query, portfolioId }),
-
+  // ----------------------------------------------------------------- trading
+  /**
+   * Phase 1: preview only. Never places an order.
+   *
+   * Deliberately takes NO `portfolioId`: `sc broker trade buy|sell` has no
+   * `--portfolio-id` flag and rejects it, so trading always targets the
+   * persisted broker context. Keeping it out of the type stops a caller from
+   * aiming a money-moving command at another portfolio by accident.
+   */
   tradePreview: (params: {
-    side: "buy" | "sell";
+    side: TradeSide;
     isin: string;
     amount?: string;
     shares?: string;
-    orderType?: string;
+    orderType?: OrderType;
     limitPrice?: string;
     stopPrice?: string;
     venue?: string;
-    portfolioId?: string;
   }) => invokeSc<TradePreviewData>("trade_preview", params),
+  /** Phase 2: submits, and only after a separate explicit user confirmation. */
   tradeSubmit: (params: {
-    side: "buy" | "sell";
+    side: TradeSide;
     confirmationId: string;
     isin?: string;
     amount?: string;
     shares?: string;
-    orderType?: string;
+    orderType?: OrderType;
     limitPrice?: string;
     stopPrice?: string;
     venue?: string;
-    portfolioId?: string;
+    /** Buy-only: the CLI rejects `--accept-unsuitable` on a sell. */
     acceptUnsuitable?: boolean;
   }) => invokeSc<TradeSubmitData>("trade_submit", params),
   tradeCancel: (orderId: string, portfolioId?: string) =>
     invokeSc<TradeCancelData>("trade_cancel", { orderId, portfolioId }),
 
-  getDerivatives: (params: {
-    underlying: string;
-    derivativeType: string;
-    strategy: string;
-    limit?: number;
-    offset?: number;
-    issuer?: string[];
-    leverageMin?: string;
-    leverageMax?: string;
-    knockoutBarrierMin?: string;
-    knockoutBarrierMax?: string;
-    strikeMin?: string;
-    strikeMax?: string;
-    sortField?: string;
-    sortOrder?: string;
-    portfolioId?: string;
-  }) => invokeSc<DerivativesData>("search_derivatives", params),
-
+  // -------------------------------------------------------- portfolio groups
   getPortfolioGroups: (portfolioId?: string, groupId?: string) =>
-    invokeSc<PortfolioGroupsData>("get_portfolio_groups", { portfolioId, groupId }),
+    invokeSc<PortfolioGroupsData>("get_portfolio_groups", {
+      portfolioId,
+      groupId,
+    }),
   createPortfolioGroup: (params: {
     name: string;
     description?: string;

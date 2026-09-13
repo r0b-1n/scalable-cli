@@ -3,7 +3,8 @@ import { api } from "../../api/client";
 import { useAppStore } from "../../store/appStore";
 import { useI18n } from "../../i18n";
 import Spinner from "../ui/Spinner";
-import { Briefcase, AlertCircle, ChevronRight } from "lucide-react";
+import { ScalableMark } from "../brand/Logo";
+import { AlertCircle, ChevronRight } from "lucide-react";
 
 /**
  * Blocks the app after login until a broker portfolio context exists.
@@ -24,8 +25,8 @@ export default function PortfolioGate() {
       await api.selectBrokerContext(portfolioId);
       setActivePortfolioId(portfolioId);
       setPortfolioSelection(false, availablePortfolios);
-    } catch (err: any) {
-      setError(err?.message || t.context.selectFailed);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.context.selectFailed);
       setSelecting(null);
     }
   };
@@ -35,7 +36,7 @@ export default function PortfolioGate() {
       <div className="w-full max-w-sm px-6 animate-slide-up">
         <div className="text-center mb-10">
           <div className="w-14 h-14 mx-auto mb-6 rounded-2xl bg-accent flex items-center justify-center">
-            <Briefcase size={24} className="text-bg-primary" />
+            <ScalableMark className="h-6 w-6 text-on-accent" />
           </div>
           <h1 className="text-2xl font-semibold tracking-tight text-text-primary mb-2">
             {t.context.title}
@@ -47,9 +48,10 @@ export default function PortfolioGate() {
           {availablePortfolios.map((id) => (
             <button
               key={id}
+              type="button"
               onClick={() => choose(id)}
               disabled={selecting !== null}
-              className="w-full flex items-center justify-between px-4 py-3.5 rounded-xl text-left hover:bg-white/[0.04] transition-colors cursor-pointer disabled:opacity-60"
+              className="w-full flex items-center justify-between px-4 py-3.5 rounded-xl text-left hover:bg-hover transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             >
               <span className="text-sm font-medium text-text-primary font-mono">{id}</span>
               {selecting === id ? (

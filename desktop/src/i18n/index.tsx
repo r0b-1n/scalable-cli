@@ -8,7 +8,7 @@ import {
 } from "react";
 import { de, en, type Translations } from "./translations";
 
-export { enumLabel } from "./translations";
+export { enumLabel, prettifyEnum } from "./translations";
 export type { Translations } from "./translations";
 
 export type Language = "de" | "en";

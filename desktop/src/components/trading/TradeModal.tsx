@@ -1,311 +1,252 @@
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api/client";
 import { useAppStore } from "../../store/appStore";
-import Modal from "../ui/Modal";
-import Button from "../ui/Button";
-import Input from "../ui/Input";
-import SegmentedControl from "../ui/SegmentedControl";
-import Spinner from "../ui/Spinner";
-import Badge from "../ui/Badge";
-import { formatCurrency } from "../../lib/format";
 import { useI18n } from "../../i18n";
-import { AlertTriangle, CheckCircle, ArrowRight } from "lucide-react";
+import type { OrderType, QuoteData, TradePreviewData, TradeSide, TradeSubmitData } from "../../api/types";
+import Modal from "../ui/Modal";
+import OrderEntryForm from "./OrderEntryForm";
+import DisclosureView from "./DisclosureView";
+import ResultView from "./ResultView";
 
-type TradeStep = "form" | "preview" | "result";
-type OrderType = "market" | "limit" | "stop";
+type TradeStep = "entry" | "disclosure" | "result";
+type PreviewArgs = Parameters<typeof api.tradePreview>[0];
 
-function Row({ label, value, strong = false }: { label: string; value: React.ReactNode; strong?: boolean }) {
-  return (
-    <div className="flex items-center justify-between py-2.5">
-      <span className="text-sm text-text-secondary">{label}</span>
-      <span
-        className={`text-sm tabular-nums ${strong ? "font-semibold text-text-primary" : "font-medium text-text-primary"}`}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
+const ISIN_PATTERN = /^[A-Za-z]{2}[A-Za-z0-9]{9}[0-9]$/;
 
+/**
+ * The trade ticket. Three explicit steps, matching the CLI's own two-phase
+ * flow plus a result screen:
+ *  1. entry     — build the order, see a live quote.
+ *  2. disclosure — `trade_preview` output rendered in full; the user reviews
+ *     it, nothing is submitted yet.
+ *  3. result     — only reached after the user presses the phase-2 button.
+ */
 export default function TradeModal() {
-  const { tradeModalOpen, tradeModalSide, tradeModalIsin, closeTradeModal } = useAppStore();
+  const { tradeModalOpen, tradeModalSide, tradeModalIsin, tradeModalPrefill, activePortfolioId, closeTradeModal } =
+    useAppStore();
   const { t } = useI18n();
-  const [step, setStep] = useState<TradeStep>("form");
-  const [isin, setIsin] = useState(tradeModalIsin || "");
+
+  const [step, setStep] = useState<TradeStep>("entry");
+  const [side, setSide] = useState<TradeSide>("buy");
+  const [isin, setIsin] = useState("");
   const [amount, setAmount] = useState("");
   const [shares, setShares] = useState("");
   const [orderType, setOrderType] = useState<OrderType>("market");
   const [limitPrice, setLimitPrice] = useState("");
   const [stopPrice, setStopPrice] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState<any>(null);
-  const [result, setResult] = useState<any>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [venue, setVenue] = useState("");
+
+  const [quote, setQuote] = useState<QuoteData | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<TradePreviewData | null>(null);
+  const [previewArgs, setPreviewArgs] = useState<PreviewArgs | null>(null);
+  const [acceptUnsuitable, setAcceptUnsuitable] = useState(false);
+
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [result, setResult] = useState<TradeSubmitData | null>(null);
+
   // Synchronous in-flight guard: `disabled={loading}` only applies after a
-  // re-render, so a fast double-activation could submit an order twice.
+  // re-render, so a fast double-activation could call the CLI twice.
   const inFlight = useRef(false);
 
-  const isBuy = tradeModalSide === "buy";
-
-  const handlePreview = async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await api.tradePreview({
-        side: tradeModalSide,
-        isin: isin.trim(),
-        amount: amount || undefined,
-        shares: shares || undefined,
-        orderType,
-        limitPrice: limitPrice || undefined,
-        stopPrice: stopPrice || undefined,
-      });
-      setPreview(data);
-      setStep("preview");
-    } catch (err: any) {
-      setError(err?.message || t.trade.previewFailed);
-    } finally {
-      inFlight.current = false;
-      setLoading(false);
-    }
-  };
-
-  const handleConfirm = async () => {
-    if (inFlight.current) return;
-    // sc's two-phase trade flow: repeat the command with --confirm <id>.
-    const confirmationId = (preview as any)?.confirmation?.id;
-    if (!confirmationId) {
-      setError(t.trade.missingConfirmation);
-      return;
-    }
-    inFlight.current = true;
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await api.tradeSubmit({
-        side: tradeModalSide,
-        confirmationId,
-        isin: isin.trim(),
-        amount: amount || undefined,
-        shares: shares || undefined,
-        orderType,
-        limitPrice: limitPrice || undefined,
-        stopPrice: stopPrice || undefined,
-      });
-      setResult(data);
-      setStep("result");
-    } catch (err: any) {
-      setError(err?.message || t.trade.tradeFailed);
-    } finally {
-      inFlight.current = false;
-      setLoading(false);
-    }
-  };
-
-  const handleClose = () => {
-    setStep("form");
-    setPreview(null);
-    setResult(null);
-    setError(null);
-    setAmount("");
-    setShares("");
+  const resetForm = useCallback(() => {
+    setStep("entry");
+    setSide(tradeModalSide);
+    setIsin(tradeModalIsin || "");
+    setAmount(tradeModalSide === "buy" ? tradeModalPrefill?.amount || "" : "");
+    setShares(tradeModalPrefill?.shares || "");
+    setOrderType("market");
     setLimitPrice("");
     setStopPrice("");
+    setVenue("");
+    setQuote(null);
+    setPreviewLoading(false);
+    setPreviewError(null);
+    setPreview(null);
+    setPreviewArgs(null);
+    setAcceptUnsuitable(false);
+    setSubmitting(false);
+    setSubmitError(null);
+    setResult(null);
+  }, [tradeModalSide, tradeModalIsin, tradeModalPrefill]);
+
+  // Fresh state every time the ticket opens; a close mid-flow must never
+  // leave a stale preview or confirmation id lying around for next time.
+  useEffect(() => {
+    if (tradeModalOpen) resetForm();
+  }, [tradeModalOpen, resetForm]);
+
+  // Sell has no `--amount` on the CLI — clear it defensively if the side
+  // toggle flips after an amount was typed while buying.
+  useEffect(() => {
+    if (side === "sell") setAmount("");
+  }, [side]);
+
+  // Live quote, debounced, only once the field holds something ISIN-shaped.
+  useEffect(() => {
+    const clean = isin.trim().toUpperCase();
+    if (!tradeModalOpen || !ISIN_PATTERN.test(clean)) {
+      setQuote(null);
+      return;
+    }
+    let cancelled = false;
+    setQuoteLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const data = await api.getQuote(clean, { portfolioId: activePortfolioId || undefined });
+        if (!cancelled) setQuote(data);
+      } catch {
+        if (!cancelled) setQuote(null);
+      } finally {
+        if (!cancelled) setQuoteLoading(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isin, tradeModalOpen, activePortfolioId]);
+
+  const handleClose = () => {
+    resetForm();
     closeTradeModal();
   };
 
-  const pv = (preview as any)?.result;
-  const quoteCurrency = pv?.market_quote?.currency || "EUR";
-  const submission = (result as any)?.result?.order_submission;
+  const handleAmountChange = (v: string) => {
+    setAmount(v);
+    if (v) setShares("");
+  };
+  const handleSharesChange = (v: string) => {
+    setShares(v);
+    if (v) setAmount("");
+  };
+
+  const buildPreviewArgs = (): PreviewArgs => ({
+    side,
+    isin: isin.trim(),
+    amount: side === "buy" ? amount.trim() || undefined : undefined,
+    shares: shares.trim() || undefined,
+    orderType,
+    limitPrice: orderType === "limit" ? limitPrice.trim() || undefined : undefined,
+    stopPrice: orderType === "stop" ? stopPrice.trim() || undefined : undefined,
+    venue: venue.trim() || undefined,
+  });
+
+  const canPreview =
+    isin.trim().length > 0 &&
+    (side === "buy" ? Boolean(amount.trim() || shares.trim()) : Boolean(shares.trim())) &&
+    (orderType !== "limit" || limitPrice.trim().length > 0) &&
+    (orderType !== "stop" || stopPrice.trim().length > 0);
+
+  const handlePreview = async () => {
+    if (inFlight.current || !canPreview) return;
+    inFlight.current = true;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    const args = buildPreviewArgs();
+    try {
+      const data = await api.tradePreview(args);
+      if (!data?.confirmation?.id) {
+        setPreviewError(t.trade.missingConfirmation);
+        return;
+      }
+      setPreview(data);
+      setPreviewArgs(args);
+      setAcceptUnsuitable(false);
+      setStep("disclosure");
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : t.trade.previewFailed);
+    } finally {
+      inFlight.current = false;
+      setPreviewLoading(false);
+    }
+  };
+
+  // Phase 2 — fires only from the explicit button `DisclosureView` renders,
+  // never automatically, and always repeats the exact phase-1 arguments.
+  const handleSubmit = async () => {
+    if (inFlight.current || !preview || !previewArgs) return;
+    inFlight.current = true;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const data = await api.tradeSubmit({
+        ...previewArgs,
+        confirmationId: preview.confirmation.id,
+        ...(side === "buy" ? { acceptUnsuitable } : {}),
+      });
+      setResult(data);
+      setStep("result");
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : t.trade.tradeFailed);
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  const midPrice = quote?.result?.quote_mid_price;
+  const estimatedShares =
+    side === "buy" && amount.trim() && midPrice ? parseFloat(amount) / midPrice : null;
 
   return (
     <Modal
       isOpen={tradeModalOpen}
       onClose={handleClose}
-      title={isBuy ? t.trade.buyOrder : t.trade.sellOrder}
+      title={side === "buy" ? t.trade.buyOrder : t.trade.sellOrder}
+      maxWidth="max-w-2xl"
     >
-      {step === "form" && (
-        <div className="space-y-4">
-          <Input
-            label={t.trade.isinLabel}
-            placeholder={t.trade.isinPlaceholder}
-            value={isin}
-            onChange={(e) => setIsin(e.target.value)}
-            disabled={!!tradeModalIsin}
-          />
-          <div className="grid grid-cols-2 gap-3">
-            <Input
-              label={t.trade.amountLabel}
-              type="number"
-              placeholder={t.trade.amountPlaceholder}
-              value={amount}
-              onChange={(e) => {
-                setAmount(e.target.value);
-                setShares("");
-              }}
-            />
-            <Input
-              label={t.trade.sharesLabel}
-              type="number"
-              placeholder={isBuy ? t.trade.sharesPlaceholderBuy : t.trade.sharesPlaceholderSell}
-              value={shares}
-              onChange={(e) => {
-                setShares(e.target.value);
-                setAmount("");
-              }}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <span className="block text-sm font-medium text-text-secondary">{t.trade.orderType}</span>
-            <SegmentedControl<OrderType>
-              options={[
-                { value: "market", label: t.trade.market },
-                { value: "limit", label: t.trade.limit },
-                { value: "stop", label: t.trade.stop },
-              ]}
-              value={orderType}
-              onChange={setOrderType}
-            />
-          </div>
-          {orderType === "limit" && (
-            <Input
-              label={t.trade.limitPrice}
-              type="number"
-              placeholder={t.trade.limitPlaceholder}
-              value={limitPrice}
-              onChange={(e) => setLimitPrice(e.target.value)}
-            />
-          )}
-          {orderType === "stop" && (
-            <Input
-              label={t.trade.stopPrice}
-              type="number"
-              placeholder={t.trade.stopPlaceholder}
-              value={stopPrice}
-              onChange={(e) => setStopPrice(e.target.value)}
-            />
-          )}
-          {error && (
-            <div className="p-3 bg-negative/10 border border-negative/20 rounded-lg">
-              <p className="text-xs text-negative">{error}</p>
-            </div>
-          )}
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="ghost" onClick={handleClose}>
-              {t.common.cancel}
-            </Button>
-            <Button onClick={handlePreview} disabled={loading || !isin.trim()}>
-              {loading ? <Spinner size={16} className="mr-2" /> : <ArrowRight size={16} className="mr-2" />}
-              {t.trade.previewOrder}
-            </Button>
-          </div>
-        </div>
+      {step === "entry" && (
+        <OrderEntryForm
+          side={side}
+          onSideChange={setSide}
+          isin={isin}
+          onIsinChange={setIsin}
+          amount={amount}
+          onAmountChange={handleAmountChange}
+          shares={shares}
+          onSharesChange={handleSharesChange}
+          orderType={orderType}
+          onOrderTypeChange={setOrderType}
+          limitPrice={limitPrice}
+          onLimitPriceChange={setLimitPrice}
+          stopPrice={stopPrice}
+          onStopPriceChange={setStopPrice}
+          venue={venue}
+          onVenueChange={setVenue}
+          quote={quote}
+          quoteLoading={quoteLoading}
+          estimatedShares={estimatedShares}
+          previewArgs={buildPreviewArgs()}
+          previewError={previewError}
+          previewLoading={previewLoading}
+          canPreview={canPreview}
+          portfolioId={activePortfolioId || undefined}
+          onPreview={handlePreview}
+          onClose={handleClose}
+        />
       )}
 
-      {step === "preview" && preview && (
-        <div className="space-y-4">
-          <div className="divide-y divide-border">
-            <Row label={t.trade.rowSecurity} value={isin} />
-            <div className="flex items-center justify-between py-2.5">
-              <span className="text-sm text-text-secondary">{t.trade.rowSide}</span>
-              <Badge variant={isBuy ? "positive" : "negative"}>{isBuy ? t.trade.sideBuy : t.trade.sideSell}</Badge>
-            </div>
-            {pv?.calculation?.shares && <Row label={t.trade.rowShares} value={pv.calculation.shares} />}
-            {pv?.calculation?.estimate_price && (
-              <Row
-                label={t.trade.rowEstPrice}
-                value={formatCurrency(parseFloat(pv.calculation.estimate_price), quoteCurrency)}
-              />
-            )}
-            {pv?.market_quote?.mid_price && (
-              <Row
-                label={t.trade.rowMarketQuote}
-                value={formatCurrency(parseFloat(pv.market_quote.mid_price), quoteCurrency)}
-              />
-            )}
-            {pv?.calculation?.estimated_order_volume && (
-              <Row
-                label={t.trade.rowEstTotal}
-                strong
-                value={formatCurrency(parseFloat(pv.calculation.estimated_order_volume), quoteCurrency)}
-              />
-            )}
-          </div>
-
-          {pv?.warning && (
-            <div className="p-3 bg-warning/10 border border-warning/20 rounded-lg">
-              <div className="flex items-start gap-2">
-                <AlertTriangle size={14} className="text-warning mt-0.5 shrink-0" />
-                <div className="space-y-1">
-                  {pv.warning.title && (
-                    <p className="text-xs font-medium text-warning">{pv.warning.title}</p>
-                  )}
-                  {pv.warning.body && <p className="text-xs text-warning/90">{pv.warning.body}</p>}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {(pv?.price_warnings?.items ?? []).length > 0 && (
-            <div className="p-3 bg-warning/10 border border-warning/20 rounded-lg space-y-1">
-              {pv.price_warnings.items.map((w: any, i: number) => (
-                <p key={i} className="text-xs text-warning">
-                  {typeof w === "string" ? w : (w.message ?? JSON.stringify(w))}
-                </p>
-              ))}
-            </div>
-          )}
-
-          {error && (
-            <div className="p-3 bg-negative/10 border border-negative/20 rounded-lg">
-              <p className="text-xs text-negative">{error}</p>
-            </div>
-          )}
-
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="ghost" onClick={handleClose}>
-              {t.common.cancel}
-            </Button>
-            <Button
-              variant={isBuy ? "primary" : "danger"}
-              onClick={handleConfirm}
-              disabled={loading}
-            >
-              {loading ? <Spinner size={16} className="mr-2" /> : <CheckCircle size={16} className="mr-2" />}
-              {isBuy ? t.trade.confirmBuy : t.trade.confirmSell}
-            </Button>
-          </div>
-        </div>
+      {step === "disclosure" && preview && previewArgs && (
+        <DisclosureView
+          side={side}
+          preview={preview}
+          previewArgs={previewArgs}
+          acceptUnsuitable={acceptUnsuitable}
+          onAcceptUnsuitableChange={setAcceptUnsuitable}
+          onBack={() => setStep("entry")}
+          onSubmit={handleSubmit}
+          submitting={submitting}
+          error={submitError}
+        />
       )}
 
       {step === "result" && result && (
-        <div className="space-y-4 text-center py-4">
-          <div className="w-12 h-12 mx-auto rounded-full bg-positive/10 flex items-center justify-center animate-scale-in">
-            <CheckCircle size={24} className="text-positive" />
-          </div>
-          <div>
-            <h3 className="text-lg font-semibold text-text-primary">{t.trade.orderSubmitted}</h3>
-            {submission?.order_id && (
-              <p className="text-sm text-text-secondary mt-1 tabular-nums">
-                {t.trade.orderId(String(submission.order_id))}
-              </p>
-            )}
-          </div>
-          <div className="divide-y divide-border text-left">
-            <div className="flex justify-between py-2.5">
-              <span className="text-sm text-text-secondary">{t.trade.statusLabel}</span>
-              <Badge variant={submission?.submitted ? "positive" : "warning"}>
-                {submission?.submitted ? t.trade.statusSubmitted : t.trade.statusPending}
-              </Badge>
-            </div>
-            <Row label={t.trade.rowSecurity} value={isin} />
-          </div>
-          <Button onClick={handleClose} className="w-full" size="lg">
-            {t.trade.done}
-          </Button>
-        </div>
+        <ResultView side={side} isin={isin.trim()} result={result} onClose={handleClose} />
       )}
     </Modal>
   );

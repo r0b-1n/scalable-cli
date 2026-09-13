@@ -1,74 +1,116 @@
-import { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, ArrowRight, Bell, Layers, Minus, PiggyBank, Plus, Star } from "lucide-react";
 import { api } from "../../api/client";
 import { useAppStore } from "../../store/appStore";
-import { CardHeader, CardTitle } from "../ui/Card";
-import Spinner from "../ui/Spinner";
-import Button from "../ui/Button";
-import SegmentedControl from "../ui/SegmentedControl";
-import Stat from "../ui/Stat";
-import { formatCurrency, formatPercent, formatDate, formatDateTime, formatShortDate } from "../../lib/format";
 import { enumLabel, useI18n } from "../../i18n";
-import { chart as chartTheme } from "../../lib/chartTheme";
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from "recharts";
-import { ArrowLeft, Star, Plus, Minus } from "lucide-react";
-
-const TIMEFRAME_VALUES = ["1d", "7d", "1m", "3m", "6m", "ytd", "1y", "max"];
+import { useToast } from "../ui/Toast";
+import { renderCliCommand } from "../../lib/cliLog";
+import { formatCurrency, formatDateTime, formatPercent } from "../../lib/format";
+import Button from "../ui/Button";
+import Badge from "../ui/Badge";
+import Spinner from "../ui/Spinner";
+import Stat from "../ui/Stat";
+import CliCommand from "../ui/CliCommand";
+import { SkeletonLines } from "../ui/Skeleton";
+import type { QuoteData } from "../../api/types";
+import SecurityPriceChart from "./SecurityPriceChart";
+import SecurityPosition from "./SecurityPosition";
+import SecurityNewsSection from "./SecurityNewsSection";
+import CreatePriceAlertModal from "./CreatePriceAlertModal";
+import CreateSavingsPlanModal from "./CreateSavingsPlanModal";
 
 export default function SecurityDetail() {
-  const { isin } = useParams<{ isin: string }>();
+  const { isin: rawIsin } = useParams<{ isin: string }>();
+  const isin = (rawIsin || "").toUpperCase();
   const navigate = useNavigate();
-  const { openTradeModal } = useAppStore();
+  const { activePortfolioId, refreshToken, openTradeModal } = useAppStore();
   const { t, lang } = useI18n();
-  const [quote, setQuote] = useState<any>(null);
-  const [chart, setChart] = useState<any>(null);
-  const [news, setNews] = useState<any>(null);
+  const { push } = useToast();
+
+  const [quote, setQuote] = useState<QuoteData["result"] | null>(null);
   const [loading, setLoading] = useState(true);
-  const [timeframe, setTimeframe] = useState<string>("1m");
+  const [error, setError] = useState<string | null>(null);
+
+  const [isWatched, setIsWatched] = useState(false);
+  const [watchBusy, setWatchBusy] = useState(false);
+
+  const [alertOpen, setAlertOpen] = useState(false);
+  const [savingsOpen, setSavingsOpen] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!isin) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await api.getQuote(isin, { portfolioId: activePortfolioId || undefined });
+      setQuote(data.result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.common.loadFailed);
+    } finally {
+      setLoading(false);
+    }
+  }, [isin, activePortfolioId, t.common.loadFailed]);
+
+  useEffect(() => {
+    load();
+  }, [load, refreshToken]);
 
   useEffect(() => {
     if (!isin) return;
-    const load = async () => {
-      setLoading(true);
-      try {
-        const [qt, ch, nw] = await Promise.allSettled([
-          api.getQuote(isin),
-          api.getChart(isin, timeframe),
-          api.getSecurityNews(isin, lang === "de" ? "de_DE" : "en_DE"),
-        ]);
-        // sc --json shapes: quote nests under result; chart/news are flat.
-        if (qt.status === "fulfilled") setQuote((qt.value as any)?.result ?? null);
-        if (ch.status === "fulfilled") setChart(ch.value ?? null);
-        if (nw.status === "fulfilled") setNews(nw.value ?? null);
-      } catch {
-      } finally {
-        setLoading(false);
+    api
+      .getWatchlist({ portfolioId: activePortfolioId || undefined })
+      .then((data) => setIsWatched(data.result.items.some((i) => i.isin === isin)))
+      .catch(() => setIsWatched(false));
+  }, [isin, activePortfolioId, refreshToken]);
+
+  const toggleWatch = async () => {
+    if (watchBusy) return;
+    setWatchBusy(true);
+    try {
+      if (isWatched) {
+        await api.removeFromWatchlist(isin, activePortfolioId || undefined);
+        setIsWatched(false);
+        push({ tone: "success", title: t.watchlist.removed });
+      } else {
+        await api.addToWatchlist(isin, activePortfolioId || undefined);
+        setIsWatched(true);
+        push({ tone: "success", title: t.watchlist.added });
       }
-    };
-    load();
-  }, [isin, timeframe, lang]);
+    } catch (err) {
+      push({ tone: "error", title: t.common.actionFailed, description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setWatchBusy(false);
+    }
+  };
+
+  const locale = lang === "de" ? "de_DE" : "en_DE";
+
+  const cliCommands = useMemo(
+    () => [
+      renderCliCommand("get_quote", { isin, portfolioId: activePortfolioId || undefined }),
+      renderCliCommand("get_holdings", { portfolioId: activePortfolioId || undefined }),
+      renderCliCommand("get_transactions", { portfolioId: activePortfolioId || undefined, isin }),
+      renderCliCommand("get_security_news", { isin, locale }),
+    ],
+    [isin, activePortfolioId, locale]
+  );
+
+  if (!isin) return null;
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <Spinner size={32} />
+      <div className="space-y-8">
+        <SkeletonLines rows={4} />
       </div>
     );
   }
 
   if (!quote) {
     return (
-      <div className="text-center py-16">
-        <p className="text-text-secondary">{t.security.notFound}</p>
-        <Button variant="ghost" onClick={() => navigate(-1)} className="mt-4">
+      <div className="space-y-4 py-16 text-center">
+        <p className="text-text-secondary">{error || t.security.notFound}</p>
+        <Button variant="ghost" onClick={() => navigate(-1)}>
           <ArrowLeft size={16} className="mr-2" />
           {t.security.goBack}
         </Button>
@@ -77,176 +119,120 @@ export default function SecurityDetail() {
   }
 
   const currency = quote.quote_currency || "EUR";
-  const price = quote.quote_mid_price ?? 0;
-  const oneDay = quote.quote_performances?.find((p: any) => p.timeframe === "ONE_DAY");
-  const dayChange: number = oneDay?.simple_absolute_return ?? 0;
-  const dayChangePercent: number = (oneDay?.performance ?? 0) * 100;
-  const isPositive = dayChange >= 0;
-
-  const points = (chart?.data_points ?? []).map((p: any) => ({
-    time: p.timestamp_utc,
-    value: p.mid_price,
-  }));
-  const lineColor = isPositive ? chartTheme.line : chartTheme.lineNegative;
-  const gradFrom = isPositive ? chartTheme.gradientFrom : chartTheme.gradientFromNeg;
-  const gradTo = isPositive ? chartTheme.gradientTo : chartTheme.gradientToNeg;
-
-  const newsSources: any[] = news?.sources ?? [];
+  const spread =
+    quote.quote_ask_price != null && quote.quote_bid_price != null
+      ? quote.quote_ask_price - quote.quote_bid_price
+      : null;
 
   return (
     <div className="space-y-8">
-      {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <button
             onClick={() => navigate(-1)}
-            className="flex items-center gap-1 text-sm text-text-secondary hover:text-text-primary transition-colors mb-4 cursor-pointer"
+            className="mb-4 flex cursor-pointer items-center gap-1 text-sm text-text-secondary transition-colors hover:text-text-primary"
           >
             <ArrowLeft size={15} />
             {t.security.back}
           </button>
-          <Stat
-            size="hero"
-            label={`${quote.name || quote.isin} · ${quote.isin}`}
-            value={formatCurrency(price, currency)}
-            delta={{
-              text: `${isPositive ? "+" : ""}${formatCurrency(dayChange, currency)} · ${formatPercent(dayChangePercent)}`,
-              positive: isPositive,
-            }}
-            sub={t.common.today}
-          />
+          <div className="flex items-center gap-3">
+            <Stat
+              size="hero"
+              label={`${quote.name || quote.isin} · ${quote.isin}`}
+              value={formatCurrency(quote.quote_mid_price ?? 0, currency)}
+            />
+            <Badge>{enumLabel(t.common.securityTypes, quote.security_type)}</Badge>
+            {quote.quote_is_outdated && <Badge variant="warning">{t.security.quoteOutdated}</Badge>}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {(quote.quote_performances ?? []).map((p) => (
+              <span
+                key={p.timeframe}
+                className={`rounded-full px-2.5 py-1 text-2xs font-medium tabular-nums ${
+                  p.performance >= 0 ? "bg-positive/10 text-positive" : "bg-negative/10 text-negative"
+                }`}
+                title={p.timeframe}
+              >
+                {formatPercent(p.performance * 100)} · {formatCurrency(p.simple_absolute_return, currency)}
+              </span>
+            ))}
+          </div>
         </div>
-        <div className="flex items-center gap-2 pt-9">
-          <Button variant="secondary" size="sm">
-            <Star size={14} className="mr-1.5" />
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={toggleWatch} disabled={watchBusy}>
+            {watchBusy ? <Spinner size={14} className="mr-1.5" /> : <Star size={14} className="mr-1.5" fill={isWatched ? "currentColor" : "none"} />}
             {t.security.watch}
           </Button>
-          <Button size="sm" onClick={() => openTradeModal("buy", isin!)}>
+          <Button variant="secondary" size="sm" onClick={() => setAlertOpen(true)}>
+            <Bell size={14} className="mr-1.5" />
+            {t.alerts.newAlert}
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => setSavingsOpen(true)}>
+            <PiggyBank size={14} className="mr-1.5" />
+            {t.savings.newPlan}
+          </Button>
+          <Button size="sm" onClick={() => openTradeModal("buy", isin)}>
             <Plus size={14} className="mr-1.5" />
             {t.security.buy}
           </Button>
-          <Button variant="danger" size="sm" onClick={() => openTradeModal("sell", isin!)}>
+          <Button variant="danger" size="sm" onClick={() => openTradeModal("sell", isin)}>
             <Minus size={14} className="mr-1.5" />
             {t.security.sell}
           </Button>
         </div>
       </div>
 
-      {/* Chart */}
-      <section className="pb-8 border-b border-border">
-        <div className="mb-4">
-          <SegmentedControl
-            options={TIMEFRAME_VALUES.map((tf) => ({
-              value: tf,
-              label: t.security.timeframes[tf] ?? tf.toUpperCase(),
-            }))}
-            value={timeframe}
-            onChange={setTimeframe}
-          />
-        </div>
-        <div className="h-[320px]">
-          {points.length > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={points} margin={{ top: 8, right: 0, bottom: 0, left: 0 }}>
-                <defs>
-                  <linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={gradFrom} />
-                    <stop offset="100%" stopColor={gradTo} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid vertical={false} stroke={chartTheme.grid} />
-                <XAxis
-                  dataKey="time"
-                  tick={chartTheme.axisTick}
-                  tickFormatter={(v) => formatShortDate(String(v))}
-                  axisLine={false}
-                  tickLine={false}
-                  minTickGap={40}
-                />
-                <YAxis
-                  tick={chartTheme.axisTick}
-                  axisLine={false}
-                  tickLine={false}
-                  domain={["auto", "auto"]}
-                  width={56}
-                  tickFormatter={(v) => formatCurrency(Number(v), currency)}
-                />
-                <Tooltip
-                  contentStyle={chartTheme.tooltip}
-                  labelStyle={chartTheme.tooltipLabel}
-                  cursor={chartTheme.cursor}
-                  formatter={(value: any) => [formatCurrency(Number(value), currency), t.security.chartPrice]}
-                  labelFormatter={(v) => formatDateTime(String(v))}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="value"
-                  stroke={lineColor}
-                  strokeWidth={2}
-                  fill="url(#chartFill)"
-                  dot={false}
-                  activeDot={{ r: 4, fill: lineColor, stroke: "none" }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="flex items-center justify-center h-full text-text-secondary text-sm">
-              {t.security.chartUnavailable}
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* Key figures */}
-      <section className="grid grid-cols-4 divide-x divide-border pb-8 border-b border-border">
+      {/* Quote strip */}
+      <section className="grid grid-cols-2 gap-y-4 divide-x divide-border border-b border-border pb-8 sm:grid-cols-4">
         <Stat label={t.security.bid} value={quote.quote_bid_price != null ? formatCurrency(quote.quote_bid_price, currency) : "—"} />
         <div className="pl-6">
           <Stat label={t.security.ask} value={quote.quote_ask_price != null ? formatCurrency(quote.quote_ask_price, currency) : "—"} />
         </div>
         <div className="pl-6">
-          <Stat label={t.security.currency} value={currency} />
+          <Stat label={t.rebalancing.drift} value={spread != null ? formatCurrency(spread, currency) : "—"} />
         </div>
         <div className="pl-6">
           <Stat
             label={t.security.lastUpdated}
-            value={
-              <span className="text-sm font-medium">
-                {quote.quote_timestamp_utc ? formatDateTime(quote.quote_timestamp_utc) : "—"}
-              </span>
-            }
-            sub={quote.quote_is_outdated ? t.security.quoteOutdated : undefined}
+            value={<span className="text-sm font-medium">{quote.quote_timestamp_utc ? formatDateTime(quote.quote_timestamp_utc) : "—"}</span>}
           />
         </div>
       </section>
 
-      {/* News */}
-      {(newsSources.length > 0 || news?.summary?.short) && (
-        <section>
-          <CardHeader>
-            <CardTitle>{t.security.latestNews}</CardTitle>
-          </CardHeader>
-          {news?.summary?.short && (
-            <p className="text-sm text-text-secondary mb-4">{news.summary.short}</p>
-          )}
-          <div className="divide-y divide-border">
-            {newsSources.slice(0, 5).map((item: any, i: number) => (
-              <div key={item.id || i} className="py-3.5">
-                <h4 className="text-sm font-medium text-text-primary">{item.headline}</h4>
-                <div className="flex items-center gap-3 mt-1.5">
-                  {item.source_name && (
-                    <span className="text-2xs text-accent">{item.source_name}</span>
-                  )}
-                  {item.publication_time_utc && (
-                    <span className="text-2xs text-text-tertiary">
-                      {formatDate(item.publication_time_utc)}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
+      <SecurityPriceChart isin={isin} currency={currency} />
+
+      <button
+        onClick={() => navigate(`/derivatives?underlying=${isin}`)}
+        className="flex w-full cursor-pointer items-center justify-between rounded-2xl border border-border bg-bg-card p-4 text-left transition-colors hover:bg-bg-card-hover"
+      >
+        <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
+          <Layers size={16} className="text-text-tertiary" />
+          {t.derivatives.title}
+        </span>
+        <ArrowRight size={16} className="text-text-tertiary" />
+      </button>
+
+      <SecurityPosition isin={isin} portfolioId={activePortfolioId || undefined} />
+
+      <SecurityNewsSection isin={isin} locale={locale} />
+
+      <CliCommand commands={cliCommands} variant="block" />
+
+      <CreatePriceAlertModal
+        open={alertOpen}
+        onClose={() => setAlertOpen(false)}
+        isin={isin}
+        name={quote.name}
+        portfolioId={activePortfolioId || undefined}
+      />
+      <CreateSavingsPlanModal
+        open={savingsOpen}
+        onClose={() => setSavingsOpen(false)}
+        isin={isin}
+        name={quote.name}
+        portfolioId={activePortfolioId || undefined}
+      />
     </div>
   );
 }

@@ -14,7 +14,7 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         className={cn(
           "inline-flex items-center justify-center rounded-full font-medium transition-all duration-150 cursor-pointer active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100",
           {
-            "bg-accent text-bg-primary font-semibold hover:bg-accent-hover active:bg-accent-pressed":
+            "bg-accent text-on-accent font-semibold hover:bg-accent-hover active:bg-accent-pressed":
               variant === "primary",
             "bg-bg-card text-text-primary border border-border-strong hover:bg-bg-card-hover":
               variant === "secondary",

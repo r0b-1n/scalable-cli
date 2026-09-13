@@ -1,164 +1,186 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Plus, Star, Upload } from "lucide-react";
 import { api } from "../../api/client";
 import { useAppStore } from "../../store/appStore";
-import Spinner from "../ui/Spinner";
+import { useI18n } from "../../i18n";
+import { useToast } from "../ui/Toast";
+import { renderCliCommand } from "../../lib/cliLog";
 import Button from "../ui/Button";
-import Input from "../ui/Input";
-import Modal from "../ui/Modal";
-import Badge from "../ui/Badge";
+import DataTable from "../ui/DataTable";
 import EmptyState from "../ui/EmptyState";
-import { formatCurrency } from "../../lib/format";
-import { enumLabel, useI18n } from "../../i18n";
-import { Star, Plus, Trash2 } from "lucide-react";
+import CliCommand from "../ui/CliCommand";
+import ConfirmDialog from "../ui/ConfirmDialog";
+import { useWatchlistColumns, type WatchlistRow } from "./watchlistColumns";
+import AddSecurityModal from "./AddSecurityModal";
+import BulkImportModal from "./BulkImportModal";
+import AlertQuickModal from "./AlertQuickModal";
 
 export default function Watchlist() {
   const navigate = useNavigate();
-  const { activePortfolioId } = useAppStore();
+  const { activePortfolioId, refreshToken, openTradeModal } = useAppStore();
   const { t } = useI18n();
-  const [items, setItems] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [addModalOpen, setAddModalOpen] = useState(false);
-  const [newIsin, setNewIsin] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
+  const { push } = useToast();
 
-  const loadWatchlist = async () => {
+  const [items, setItems] = useState<WatchlistRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [includeYTD, setIncludeYTD] = useState(false);
+
+  const [addOpen, setAddOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [alertRow, setAlertRow] = useState<WatchlistRow | null>(null);
+  const [removeRow, setRemoveRow] = useState<WatchlistRow | null>(null);
+  const [removing, setRemoving] = useState(false);
+
+  const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
-      const data = await api.getWatchlist(activePortfolioId || undefined);
-      // sc --json wraps the payload in {resolution, result: {items}}.
-      setItems((data as any)?.result?.items ?? []);
-    } catch {
+      const data = await api.getWatchlist({
+        portfolioId: activePortfolioId || undefined,
+        includeYearToDate: includeYTD,
+      });
+      setItems(data.result.items ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.common.loadFailed);
     } finally {
       setLoading(false);
     }
-  };
+  }, [activePortfolioId, includeYTD, t.common.loadFailed]);
 
   useEffect(() => {
-    loadWatchlist();
-  }, [activePortfolioId]);
+    load();
+  }, [load, refreshToken]);
 
-  const handleAdd = async () => {
-    if (adding || !newIsin.trim()) return;
-    setAdding(true);
-    setFormError(null);
+  const hasYTD = includeYTD && items.some((i) => i.year_to_date_performance != null);
+
+  const handleBuy = useCallback((isin: string) => openTradeModal("buy", isin), [openTradeModal]);
+
+  const handleRemoveConfirmed = async () => {
+    if (!removeRow) return;
+    setRemoving(true);
     try {
-      await api.addToWatchlist(newIsin.trim(), activePortfolioId || undefined);
-      setNewIsin("");
-      setAddModalOpen(false);
-      loadWatchlist();
-    } catch (err: any) {
-      setFormError(err?.message || t.common.loadFailed);
+      await api.removeFromWatchlist(removeRow.isin, activePortfolioId || undefined);
+      push({ tone: "success", title: t.watchlist.removed, description: removeRow.name || removeRow.isin });
+      setRemoveRow(null);
+      load();
+    } catch (err) {
+      push({
+        tone: "error",
+        title: t.common.actionFailed,
+        description: err instanceof Error ? err.message : undefined,
+      });
     } finally {
-      setAdding(false);
+      setRemoving(false);
     }
   };
 
-  const handleRemove = async (isin: string) => {
-    try {
-      await api.removeFromWatchlist(isin, activePortfolioId || undefined);
-      loadWatchlist();
-    } catch {
-    }
-  };
+  const columns = useWatchlistColumns({
+    t,
+    hasYTD,
+    onBuy: handleBuy,
+    onAlert: setAlertRow,
+    onRemove: setRemoveRow,
+  });
+
+  const cliCommand = renderCliCommand("get_watchlist", {
+    portfolioId: activePortfolioId || undefined,
+    includeYearToDate: includeYTD,
+  });
+
+  if (error && items.length === 0) {
+    return (
+      <div className="space-y-8">
+        <h1 className="text-xl font-semibold tracking-tight text-text-primary">{t.watchlist.title}</h1>
+        <div className="space-y-4 py-16 text-center">
+          <p className="mx-auto max-w-md whitespace-pre-line text-sm text-text-secondary">{error}</p>
+          <Button variant="secondary" onClick={load}>
+            {t.common.retry}
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-text-primary tracking-tight">{t.watchlist.title}</h1>
-        <Button size="sm" onClick={() => setAddModalOpen(true)}>
-          <Plus size={14} className="mr-1.5" />
-          {t.watchlist.addSecurity}
-        </Button>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold tracking-tight text-text-primary">{t.watchlist.title}</h1>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setBulkOpen(true)}>
+            <Upload size={14} className="mr-1.5" />
+            {t.watchlist.bulkImport}
+          </Button>
+          <Button size="sm" onClick={() => setAddOpen(true)}>
+            <Plus size={14} className="mr-1.5" />
+            {t.watchlist.addSecurity}
+          </Button>
+        </div>
       </div>
 
-      {loading ? (
-        <div className="flex items-center justify-center py-16">
-          <Spinner size={28} />
-        </div>
-      ) : items.length === 0 ? (
-        <EmptyState
-          icon={<Star size={20} />}
-          title={t.watchlist.emptyTitle}
-          description={t.watchlist.emptyDesc}
-          action={
-            <Button size="sm" variant="secondary" onClick={() => setAddModalOpen(true)}>
-              <Plus size={14} className="mr-1.5" />
-              {t.watchlist.addSecurity}
-            </Button>
-          }
-        />
-      ) : (
-        <div className="divide-y divide-border">
-          {items.map((item: any) => (
-            <div
-              key={item.isin}
-              className="group flex items-center justify-between px-2 -mx-2 py-3.5 rounded-lg hover:bg-bg-card-hover/60 transition-colors"
-            >
-              <div
-                className="flex items-center gap-3 cursor-pointer flex-1 min-w-0"
-                onClick={() => navigate(`/security/${item.isin}`)}
-              >
-                <div className="w-9 h-9 rounded-full bg-bg-card flex items-center justify-center text-xs font-semibold text-text-tertiary shrink-0">
-                  {(item.name || item.isin).charAt(0)}
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-text-primary truncate">
-                    {item.name || item.isin}
-                  </p>
-                  <p className="text-2xs text-text-tertiary">{item.isin}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 shrink-0">
-                {item.security_type && (
-                  <Badge>{enumLabel(t.common.securityTypes, item.security_type)}</Badge>
-                )}
-                <p className="text-sm font-medium text-text-primary tabular-nums">
-                  {item.quote_mid_price != null
-                    ? formatCurrency(item.quote_mid_price, item.quote_currency || "EUR")
-                    : "—"}
-                </p>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleRemove(item.isin);
-                  }}
-                  className="p-1.5 rounded-full text-text-tertiary opacity-0 group-hover:opacity-100 hover:text-negative hover:bg-negative/10 transition-all cursor-pointer"
-                  aria-label={t.watchlist.removeAria(item.isin)}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <Modal isOpen={addModalOpen} onClose={() => setAddModalOpen(false)} title={t.watchlist.modalTitle}>
-        <div className="space-y-4">
-          <Input
-            label={t.watchlist.isinLabel}
-            placeholder={t.watchlist.isinPlaceholder}
-            value={newIsin}
-            onChange={(e) => setNewIsin(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+      <DataTable
+        columns={columns}
+        rows={items}
+        rowKey={(r) => r.isin}
+        onRowClick={(r) => navigate(`/security/${r.isin}`)}
+        loading={loading}
+        exportName="watchlist"
+        empty={
+          <EmptyState
+            icon={<Star size={20} />}
+            title={t.watchlist.emptyTitle}
+            description={t.watchlist.emptyDesc}
+            action={
+              <Button size="sm" variant="secondary" onClick={() => setAddOpen(true)}>
+                <Plus size={14} className="mr-1.5" />
+                {t.watchlist.addSecurity}
+              </Button>
+            }
           />
-          {formError && (
-            <div className="p-3 bg-negative/10 border border-negative/20 rounded-lg">
-              <p className="text-xs text-negative">{formError}</p>
-            </div>
-          )}
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setAddModalOpen(false)}>
-              {t.common.cancel}
-            </Button>
-            <Button onClick={handleAdd} disabled={adding}>
-              {t.common.add}
-            </Button>
-          </div>
-        </div>
-      </Modal>
+        }
+        toolbar={
+          <button
+            onClick={() => setIncludeYTD((v) => !v)}
+            aria-pressed={includeYTD}
+            title={t.portfolio.yearToDateToggle}
+            className={`cursor-pointer rounded-full px-3 py-1 text-2xs font-medium transition-colors ${
+              includeYTD ? "bg-accent-dim text-accent" : "bg-hover text-text-secondary hover:text-text-primary"
+            }`}
+          >
+            {t.security.timeframes.ytd}
+          </button>
+        }
+      />
+
+      <CliCommand commands={cliCommand} variant="block" />
+
+      <AddSecurityModal
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        portfolioId={activePortfolioId || undefined}
+        onAdded={load}
+      />
+      <BulkImportModal
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        portfolioId={activePortfolioId || undefined}
+        onDone={load}
+      />
+      {alertRow && (
+        <AlertQuickModal row={alertRow} portfolioId={activePortfolioId || undefined} onClose={() => setAlertRow(null)} />
+      )}
+      <ConfirmDialog
+        open={Boolean(removeRow)}
+        onClose={() => setRemoveRow(null)}
+        onConfirm={handleRemoveConfirmed}
+        title={removeRow ? t.watchlist.removeAria(removeRow.isin) : ""}
+        description={removeRow?.name}
+        confirmLabel={t.groups.unassign}
+        cancelLabel={t.common.cancel}
+        tone="danger"
+        busy={removing}
+      />
     </div>
   );
 }
