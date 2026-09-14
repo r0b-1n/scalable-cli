@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
@@ -373,6 +373,75 @@ pub(crate) fn open_unshared_lock_file(path: &Path, blocking: bool) -> Result<Opt
                     .with_context(|| format!("Failed opening lock file {}", path.display()));
             }
         }
+    }
+}
+
+/// Holds an exclusive advisory lock on `lock_path` for the duration of `f`.
+/// Unix uses `libc::flock(fd, LOCK_EX)`, retrying on `EINTR`; Windows reuses
+/// `open_unshared_lock_file`'s share-mode-0 polling. The lock file itself is
+/// created (not the resource it protects) at `lock_path`, whose parent
+/// directory is created via `ensure_private_dir`.
+///
+/// Every on-disk store that needs cross-process mutual exclusion should go
+/// through this rather than a raw read-then-write, and should use its own
+/// dedicated `*.lock` sentinel file rather than sharing one across unrelated
+/// stores.
+pub(crate) fn with_exclusive_file_lock<R>(
+    lock_path: &Path,
+    blocking: bool,
+    f: impl FnOnce() -> Result<R>,
+) -> Result<R> {
+    if let Some(parent) = lock_path.parent() {
+        ensure_private_dir(parent)?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock_path)
+            .with_context(|| format!("Failed to open lock file {}", lock_path.display()))?;
+        let fd = file.as_raw_fd();
+        loop {
+            let op = if blocking {
+                libc::LOCK_EX
+            } else {
+                libc::LOCK_EX | libc::LOCK_NB
+            };
+            let rc = unsafe { libc::flock(fd, op) };
+            if rc == 0 {
+                break;
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            if !blocking && err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+                bail!(
+                    "AGENT_LOCK_BUSY: {} is currently held by another process",
+                    lock_path.display()
+                );
+            }
+            return Err(err).with_context(|| format!("Failed to lock {}", lock_path.display()));
+        }
+        let result = f();
+        let _ = unsafe { libc::flock(fd, libc::LOCK_UN) };
+        result
+    }
+
+    #[cfg(windows)]
+    {
+        let guard = open_unshared_lock_file(lock_path, blocking)?;
+        if guard.is_none() {
+            bail!(
+                "AGENT_LOCK_BUSY: {} is currently held by another process",
+                lock_path.display()
+            );
+        }
+        f()
     }
 }
 
