@@ -30,6 +30,8 @@ pub struct ConfirmationPhase1Input {
     pub order_type: String,
     pub limit_price: Option<String>,
     pub stop_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portfolio_id_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +58,8 @@ pub struct TradeConfirmation {
     pub fields: ConfirmationFields,
     pub snapshot_payload: Value,
     pub ex_ante_costs: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portfolio_id_override: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -235,6 +239,7 @@ mod tests {
                 order_type: "market".to_string(),
                 limit_price: None,
                 stop_price: None,
+                portfolio_id_override: None,
             },
             fields: ConfirmationFields {
                 isin: "US0378331005".to_string(),
@@ -249,6 +254,7 @@ mod tests {
             },
             snapshot_payload: serde_json::json!({"ok": true}),
             ex_ante_costs: serde_json::json!({"entryCosts": {"total": {"amount": "1.2"}}}),
+            portfolio_id_override: None,
         }
     }
 

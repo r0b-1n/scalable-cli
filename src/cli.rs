@@ -1077,6 +1077,9 @@ pub struct BrokerTradeBuyArgs {
     )]
     pub accept_unsuitable: bool,
 
+    #[arg(long, help = "Portfolio id override (defaults to selected broker context)")]
+    pub portfolio_id: Option<String>,
+
     #[arg(long, help = "Print compact JSON")]
     pub json: bool,
 }
@@ -1109,6 +1112,9 @@ pub struct BrokerTradeSellArgs {
         help = "Phase 2 confirmation id from phase 1 preview output; run phase 1 args plus --confirm to submit"
     )]
     pub confirm: Option<String>,
+
+    #[arg(long, help = "Portfolio id override (defaults to selected broker context)")]
+    pub portfolio_id: Option<String>,
 
     #[arg(long, help = "Print compact JSON")]
     pub json: bool,

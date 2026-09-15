@@ -367,13 +367,17 @@ pub struct StorageBackendDiagnostics {
 }
 
 impl StorageBackend {
-    pub fn from_config(config: &AppConfig) -> Result<Self> {
-        let backend_kind = BackendKind::from_preference(config.auth.session_backend);
+    pub(crate) fn from_preference(pref: SessionBackendPreference) -> Result<Self> {
+        let backend_kind = BackendKind::from_preference(pref);
 
         match backend_kind {
             BackendKind::File => Ok(Self::File(FileStore::from_default_path()?)),
             BackendKind::Keyring => Ok(Self::Keyring(KeyringStore)),
         }
+    }
+
+    pub fn from_config(config: &AppConfig) -> Result<Self> {
+        Self::from_preference(config.auth.session_backend)
     }
 
     fn set_with_backend(&self, key: &str, value: &str) -> Result<SecretWriteBackend> {

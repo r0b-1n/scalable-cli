@@ -78,6 +78,7 @@ pub(crate) struct TradeIntent {
     pub(crate) stop_price_str: Option<String>,
     pub(crate) venue_override: Option<String>,
     pub(crate) locale: String,
+    pub(crate) portfolio_id_override: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +209,7 @@ struct Phase2Input {
     stop_price: Option<String>,
     limit_price_value: Option<f64>,
     stop_price_value: Option<f64>,
+    portfolio_id_override: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -228,6 +230,7 @@ struct TradeIntentBuildInput<'a> {
     stop_price: &'a Option<String>,
     stop_price_value: Option<f64>,
     venue: Option<&'a str>,
+    portfolio_id_override: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -424,6 +427,7 @@ fn execute_trade_phase1(
         fields: prepared.confirmation_fields.clone(),
         snapshot_payload: prepared.snapshot_payload.clone(),
         ex_ante_costs: prepared.ex_ante_costs.clone(),
+        portfolio_id_override: prepared.intent.portfolio_id_override.clone(),
     };
     upsert_confirmation(confirmation, now).context("Failed to persist phase 1 confirmation")?;
 
@@ -739,6 +743,7 @@ fn build_phase2_intent(
         stop_price: &phase2.stop_price,
         stop_price_value: phase2.stop_price_value,
         venue: phase2.venue.as_deref(),
+        portfolio_id_override: phase2.portfolio_id_override.as_deref(),
     })
 }
 
@@ -777,6 +782,7 @@ fn parse_phase1_intent_sell(args: &crate::cli::BrokerTradeSellArgs) -> Result<Tr
         stop_price_str: prices.stop_price,
         venue_override,
         locale: TRADE_WARNING_LOCALE.to_string(),
+        portfolio_id_override: args.portfolio_id.clone(),
     })
 }
 
@@ -805,6 +811,7 @@ fn parse_phase1_buy(
         &order_type,
         &prices,
         args.venue.as_deref(),
+        args.portfolio_id.as_deref(),
     );
     let intent = build_trade_intent(TradeIntentBuildInput {
         side: TradeSide::Buy,
@@ -816,6 +823,7 @@ fn parse_phase1_buy(
         stop_price: &prices.stop_price,
         stop_price_value: prices.stop_price_value,
         venue: args.venue.as_deref(),
+        portfolio_id_override: args.portfolio_id.as_deref(),
     })?;
 
     Ok((phase1_input, intent))
@@ -839,6 +847,7 @@ fn parse_phase1_input_for_confirmation_sell(
         order_type_label(args.order_type),
         &prices,
         args.venue.as_deref(),
+        args.portfolio_id.as_deref(),
     ))
 }
 
@@ -865,6 +874,7 @@ fn parse_phase2_input_buy(args: &crate::cli::BrokerTradeBuyArgs) -> Result<Phase
         stop_price: prices.stop_price,
         limit_price_value: prices.limit_price_value,
         stop_price_value: prices.stop_price_value,
+        portfolio_id_override: args.portfolio_id.clone(),
     })
 }
 
@@ -891,6 +901,7 @@ fn parse_phase2_input_sell(args: &crate::cli::BrokerTradeSellArgs) -> Result<Pha
         stop_price: prices.stop_price,
         limit_price_value: prices.limit_price_value,
         stop_price_value: prices.stop_price_value,
+        portfolio_id_override: args.portfolio_id.clone(),
     })
 }
 
@@ -958,6 +969,7 @@ fn build_confirmation_phase1_input(
     order_type: &str,
     prices: &ValidatedOrderPrices,
     venue: Option<&str>,
+    portfolio_id_override: Option<&str>,
 ) -> ConfirmationPhase1Input {
     ConfirmationPhase1Input {
         side: side.to_string(),
@@ -968,6 +980,7 @@ fn build_confirmation_phase1_input(
         order_type: order_type.to_string(),
         limit_price: prices.limit_price.clone(),
         stop_price: prices.stop_price.clone(),
+        portfolio_id_override: portfolio_id_override.map(ToString::to_string),
     }
 }
 
@@ -990,6 +1003,7 @@ fn build_trade_intent(input: TradeIntentBuildInput<'_>) -> Result<TradeIntent> {
             .filter(|value| !value.is_empty())
             .map(str::to_uppercase),
         locale: TRADE_WARNING_LOCALE.to_string(),
+        portfolio_id_override: input.portfolio_id_override.map(str::to_string),
     })
 }
 
@@ -1034,6 +1048,9 @@ fn assert_phase2_matches_phase1_input(
     if phase2.stop_price != phase1.stop_price {
         bail!("CONFIRMATION_FIELDS_MISMATCH: --stop-price does not match phase 1 input");
     }
+    if phase2.portfolio_id_override != phase1.portfolio_id_override {
+        bail!("CONFIRMATION_FIELDS_MISMATCH: --portfolio-id does not match phase 1 input");
+    }
     Ok(())
 }
 
@@ -1055,7 +1072,7 @@ fn prepare_trade(
         &env_cfg,
         &mut session,
         dpop_options,
-        None,
+        intent.portfolio_id_override.as_deref(),
     )?;
 
     let tradability_variables =
@@ -3262,6 +3279,7 @@ mod tests {
                 stop_price_str: None,
                 venue_override: Some("GETTEX".to_string()),
                 locale: "en_DE".to_string(),
+                portfolio_id_override: None,
             },
             tradability_gate: TradeTradabilityGate {
                 status: "TRADABLE_WITHOUT_APPROPRIATENESS".to_string(),
@@ -3372,6 +3390,7 @@ mod tests {
             stop_price_str: None,
             venue_override: None,
             locale: "en_DE".to_string(),
+            portfolio_id_override: None,
         };
         let quote = SecurityTick {
             ask_price: Some(50.5),
@@ -3415,6 +3434,7 @@ mod tests {
             stop_price_str: None,
             venue_override: None,
             locale: "en_DE".to_string(),
+            portfolio_id_override: None,
         };
         let quote = SecurityTick {
             ask_price: Some(50.5),
@@ -3457,6 +3477,7 @@ mod tests {
             stop_price_str: Some("48.00".to_string()),
             venue_override: None,
             locale: "en_DE".to_string(),
+            portfolio_id_override: None,
         };
         let quote = SecurityTick {
             ask_price: Some(50.5),
@@ -3498,6 +3519,7 @@ mod tests {
             stop_price_str: None,
             venue_override: None,
             locale: "en_DE".to_string(),
+            portfolio_id_override: None,
         };
         let quote = SecurityTick {
             ask_price: Some(50.5),
@@ -3546,10 +3568,12 @@ mod tests {
                 order_type: prepared.intent.order_type.clone(),
                 limit_price: prepared.intent.limit_price_str.clone(),
                 stop_price: prepared.intent.stop_price_str.clone(),
+                portfolio_id_override: None,
             },
             fields: prepared.confirmation_fields.clone(),
             snapshot_payload: prepared.snapshot_payload.clone(),
             ex_ante_costs: prepared.ex_ante_costs.clone(),
+            portfolio_id_override: prepared.intent.portfolio_id_override.clone(),
         }
     }
 
@@ -3686,6 +3710,7 @@ mod tests {
             stop_price: None,
             limit_price_value: None,
             stop_price_value: None,
+            portfolio_id_override: None,
         };
 
         let err = ensure_phase2_submission_requirements(&prepared, &phase2, &stored)
@@ -3719,6 +3744,7 @@ mod tests {
             stop_price: None,
             limit_price_value: None,
             stop_price_value: None,
+            portfolio_id_override: None,
         };
         let phase1 = ConfirmationPhase1Input {
             side: ORDER_SIDE_BUY.to_string(),
@@ -3729,6 +3755,7 @@ mod tests {
             order_type: ORDER_TYPE_MARKET.to_string(),
             limit_price: None,
             stop_price: None,
+            portfolio_id_override: None,
         };
 
         let intent =
@@ -3752,6 +3779,7 @@ mod tests {
             venue: None,
             confirm: None,
             accept_unsuitable: false,
+            portfolio_id: None,
             json: true,
         };
         let phase2_args = crate::cli::BrokerTradeBuyArgs {
@@ -3764,6 +3792,7 @@ mod tests {
             venue: None,
             confirm: Some("scb1_test".to_string()),
             accept_unsuitable: false,
+            portfolio_id: None,
             json: true,
         };
 
@@ -3803,6 +3832,7 @@ mod tests {
             stop_price: None,
             limit_price_value: None,
             stop_price_value: None,
+            portfolio_id_override: None,
         };
         let phase1 = ConfirmationPhase1Input {
             side: ORDER_SIDE_BUY.to_string(),
@@ -3813,6 +3843,7 @@ mod tests {
             order_type: ORDER_TYPE_MARKET.to_string(),
             limit_price: None,
             stop_price: None,
+            portfolio_id_override: None,
         };
 
         let intent =
@@ -3842,6 +3873,7 @@ mod tests {
             stop_price: None,
             limit_price_value: None,
             stop_price_value: None,
+            portfolio_id_override: None,
         };
         let phase1 = ConfirmationPhase1Input {
             side: ORDER_SIDE_BUY.to_string(),
@@ -3852,6 +3884,7 @@ mod tests {
             order_type: ORDER_TYPE_MARKET.to_string(),
             limit_price: None,
             stop_price: None,
+            portfolio_id_override: None,
         };
 
         let intent =
@@ -3922,6 +3955,7 @@ mod tests {
             stop_price: None,
             limit_price_value: Some(123.45),
             stop_price_value: None,
+            portfolio_id_override: None,
         };
         let phase1 = ConfirmationPhase1Input {
             side: ORDER_SIDE_BUY.to_string(),
@@ -3932,6 +3966,7 @@ mod tests {
             order_type: ORDER_TYPE_LIMIT.to_string(),
             limit_price: Some("120".to_string()),
             stop_price: None,
+            portfolio_id_override: None,
         };
 
         let err = assert_phase2_matches_phase1_input(TradeSide::Buy, &phase2, &phase1)
@@ -3956,6 +3991,7 @@ mod tests {
             stop_price: Some("88.10".to_string()),
             limit_price_value: None,
             stop_price_value: Some(88.10),
+            portfolio_id_override: None,
         };
         let phase1 = ConfirmationPhase1Input {
             side: ORDER_SIDE_BUY.to_string(),
@@ -3966,6 +4002,7 @@ mod tests {
             order_type: ORDER_TYPE_STOP.to_string(),
             limit_price: None,
             stop_price: Some("87.50".to_string()),
+            portfolio_id_override: None,
         };
 
         let err = assert_phase2_matches_phase1_input(TradeSide::Buy, &phase2, &phase1)
@@ -3993,6 +4030,7 @@ mod tests {
             stop_price: None,
             limit_price_value: None,
             stop_price_value: None,
+            portfolio_id_override: None,
         };
 
         let err = ensure_unsuitable_acknowledgement(&phase2, &stored)
@@ -4024,6 +4062,7 @@ mod tests {
             venue: Some("gettex".to_string()),
             confirm: None,
             accept_unsuitable: false,
+            portfolio_id: None,
             json: true,
         };
 
@@ -4048,6 +4087,7 @@ mod tests {
             venue: Some("gettex".to_string()),
             confirm: None,
             accept_unsuitable: false,
+            portfolio_id: None,
             json: true,
         };
 
@@ -4075,6 +4115,7 @@ mod tests {
             venue: None,
             confirm: None,
             accept_unsuitable: false,
+            portfolio_id: None,
             json: true,
         };
 
@@ -4099,6 +4140,7 @@ mod tests {
             venue: None,
             confirm: None,
             accept_unsuitable: false,
+            portfolio_id: None,
             json: true,
         };
 
@@ -4118,6 +4160,7 @@ mod tests {
             venue: None,
             confirm: None,
             accept_unsuitable: false,
+            portfolio_id: None,
             json: true,
         };
 
@@ -4137,6 +4180,7 @@ mod tests {
             venue: None,
             confirm: None,
             accept_unsuitable: false,
+            portfolio_id: None,
             json: true,
         };
 
@@ -4157,6 +4201,7 @@ mod tests {
                 venue: None,
                 confirm: None,
                 accept_unsuitable: false,
+                portfolio_id: None,
                 json: true,
             };
 
@@ -4180,6 +4225,7 @@ mod tests {
             venue: None,
             confirm: Some("scb1_test".to_string()),
             accept_unsuitable: false,
+            portfolio_id: None,
             json: true,
         };
 
@@ -4204,6 +4250,7 @@ mod tests {
             stop_price: None,
             limit_price_value: None,
             stop_price_value: None,
+            portfolio_id_override: None,
         };
         let phase1 = ConfirmationPhase1Input {
             side: ORDER_SIDE_BUY.to_string(),
@@ -4214,6 +4261,7 @@ mod tests {
             order_type: ORDER_TYPE_MARKET.to_string(),
             limit_price: None,
             stop_price: None,
+            portfolio_id_override: None,
         };
 
         let err = assert_phase2_matches_phase1_input(TradeSide::Buy, &phase2, &phase1)
@@ -4266,6 +4314,7 @@ mod tests {
             stop_price_str: None,
             venue_override: Some("SEIX".to_string()),
             locale: "en_DE".to_string(),
+            portfolio_id_override: None,
         };
         let quote = SecurityTick {
             ask_price: None,
@@ -4300,6 +4349,7 @@ mod tests {
             stop_price_str: None,
             venue_override: Some("SEIX".to_string()),
             locale: "en_DE".to_string(),
+            portfolio_id_override: None,
         };
         let quote = SecurityTick {
             ask_price: Some(48.8),

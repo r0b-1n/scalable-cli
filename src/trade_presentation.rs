@@ -1721,6 +1721,7 @@ mod tests {
             order_type: "limit".to_string(),
             limit_price: Some("48.50".to_string()),
             stop_price: Some("47.00".to_string()),
+            portfolio_id_override: None,
         }
     }
 
@@ -1734,6 +1735,7 @@ mod tests {
             order_type: "limit".to_string(),
             limit_price: Some("48.50".to_string()),
             stop_price: Some("47.00".to_string()),
+            portfolio_id_override: None,
         }
     }
 
@@ -1793,6 +1795,7 @@ mod tests {
                 stop_price_str: None,
                 venue_override: Some("SEIX".to_string()),
                 locale: "en_DE".to_string(),
+                portfolio_id_override: None,
             },
             tradability_gate: TradeTradabilityGate {
                 status: "TRADABLE_WITHOUT_APPROPRIATENESS".to_string(),
