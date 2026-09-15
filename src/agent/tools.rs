@@ -370,17 +370,23 @@ mod tests {
     use crate::config::{AppConfig, DpopKeyBackend, RuntimeAuthConfig, SessionBackendPreference};
     use crate::session::SessionManager;
 
+    /// Holds the crate-wide test env lock for its lifetime. `SC_CONFIG_DIR` is
+    /// process-global while the harness runs tests on parallel threads, so a guard
+    /// that redirects it without this lock moves the config directory out from
+    /// under whichever other test is mid-read.
     struct EnvGuard {
         previous: Option<OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl EnvGuard {
         fn set_config_dir(path: &std::path::Path) -> Self {
+            let _lock = crate::lock_test_env();
             let previous = std::env::var_os("SC_CONFIG_DIR");
             unsafe {
                 std::env::set_var("SC_CONFIG_DIR", path);
             }
-            Self { previous }
+            Self { previous, _lock }
         }
     }
 
