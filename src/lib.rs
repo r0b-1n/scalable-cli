@@ -1,6 +1,11 @@
 #![warn(clippy::all)]
 
 mod active_session;
+// CLI wiring (agent_commands.rs, clap subcommands) lands in a later change;
+// until then most of this module's surface is unused from lib.rs's point
+// of view. Remove this allow once agent_commands.rs calls into it.
+#[allow(dead_code)]
+mod agent;
 mod auth;
 mod broker_commands;
 mod broker_context;
