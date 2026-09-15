@@ -14,18 +14,21 @@ pub(crate) mod google;
 pub(crate) mod ollama;
 pub(crate) mod openai;
 
+#[derive(Debug)]
 pub(crate) enum ChatMessage {
     User(String),
     Assistant { text: Option<String>, tool_calls: Vec<ToolCall> },
     Tool { tool_call_id: String, name: String, content: Value },
 }
 
+#[derive(Debug)]
 pub(crate) struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: Value,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToolSpec {
     pub name: &'static str,
     pub description: &'static str,
@@ -40,6 +43,7 @@ pub(crate) struct ChatRequest<'a> {
     pub params: &'a ProviderParams,
 }
 
+#[derive(Debug)]
 pub(crate) enum StopReason {
     ToolUse,
     EndTurn,
@@ -47,6 +51,7 @@ pub(crate) enum StopReason {
     Other(String),
 }
 
+#[derive(Debug)]
 pub(crate) struct ChatResponse {
     pub assistant_text: Option<String>,
     pub tool_calls: Vec<ToolCall>,
