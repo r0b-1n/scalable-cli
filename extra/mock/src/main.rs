@@ -2,6 +2,7 @@ mod auth;
 mod catalog;
 mod fixtures;
 mod graphql;
+mod llm;
 mod pricing;
 mod rng;
 mod state;
@@ -16,9 +17,11 @@ use axum::{
 };
 use chrono::Utc;
 use clap::Parser;
+use llm::{AiState, SharedAi};
 use serde_json::json;
 use state::{MockState, SharedState};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -35,6 +38,16 @@ struct Args {
     /// reproducible without having to remember to pass `--seed`.
     #[arg(long, default_value_t = DEFAULT_SEED)]
     seed: u64,
+    /// Path to a JSON script of pinned, per-turn-index LLM responses (§10.5). When present, the
+    /// mock's `/v1/messages`, `/v1/chat/completions`, `:generateContent`, and `/api/chat` routes
+    /// serve turns from this file instead of the deterministic RNG decision path, so a specific
+    /// scenario can be driven without depending on probability.
+    #[arg(long)]
+    llm_script: Option<PathBuf>,
+    /// Reject LLM-route requests that carry no recognized provider credential header with a 401,
+    /// instead of the default leniency of serving a response regardless.
+    #[arg(long, default_value_t = false)]
+    require_provider_auth: bool,
 }
 
 /// Fixed default so `scalable-mock` with no `--seed` flag is still fully reproducible.
@@ -70,6 +83,16 @@ async fn main() -> anyhow::Result<()> {
         audience.clone(),
         client_id.clone(),
     )));
+    let llm_script = args
+        .llm_script
+        .as_deref()
+        .map(llm::load_script)
+        .transpose()?;
+    let ai_state: SharedAi = Arc::new(RwLock::new(AiState::new(
+        args.seed,
+        llm_script,
+        args.require_provider_auth,
+    )));
 
     println!("Scalable Mock Backend");
     println!("  issuer:      {}", issuer);
@@ -89,22 +112,25 @@ async fn main() -> anyhow::Result<()> {
     let combined_state = AppState {
         mock: mock_state,
         auth: auth_state,
+        ai: ai_state,
     };
 
-    let app_with_combined = Router::new()
-        .route("/", get(root_handler))
-        .route("/graphql", post(handle_graphql_combined))
-        .route("/api/cli/graphql", post(handle_graphql_combined))
-        .route("/oauth/device/code", post(handle_device_code_combined))
-        .route("/oauth/token", post(handle_token_combined))
-        .route("/oauth/revoke", post(handle_revoke_combined))
-        .route("/.well-known/openid-configuration", get(handle_openid_combined))
-        .route("/jwks", get(handle_jwks_combined))
-        .route("/.well-known/oauth-authorization-server", get(handle_openid_combined))
-        .route("/authorize", get(auth::authorize_handler))
-        .route("/device", get(auth::device_page_handler))
-        .fallback(fallback_handler)
-        .with_state(combined_state);
+    let app_with_combined = llm::add_routes(
+        Router::new()
+            .route("/", get(root_handler))
+            .route("/graphql", post(handle_graphql_combined))
+            .route("/api/cli/graphql", post(handle_graphql_combined))
+            .route("/oauth/device/code", post(handle_device_code_combined))
+            .route("/oauth/token", post(handle_token_combined))
+            .route("/oauth/revoke", post(handle_revoke_combined))
+            .route("/.well-known/openid-configuration", get(handle_openid_combined))
+            .route("/jwks", get(handle_jwks_combined))
+            .route("/.well-known/oauth-authorization-server", get(handle_openid_combined))
+            .route("/authorize", get(auth::authorize_handler))
+            .route("/device", get(auth::device_page_handler)),
+    )
+    .fallback(fallback_handler)
+    .with_state(combined_state);
 
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
     axum::serve(listener, app_with_combined).await?;
@@ -112,9 +138,10 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     mock: SharedState,
     auth: SharedAuth,
+    pub(crate) ai: SharedAi,
 }
 
 async fn handle_graphql_combined(
