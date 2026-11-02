@@ -9,7 +9,6 @@ import {
   Moon,
   Settings,
   LogOut,
-  PieChart,
   Layers,
   Scale,
   ListOrdered,
@@ -57,7 +56,6 @@ export default function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
       items: [
         { path: "/portfolio", label: nav("portfolio"), icon: Briefcase },
         { path: "/groups", label: t.groups.title, icon: Layers },
-        { path: "/analytics", label: t.analytics.title, icon: PieChart },
         { path: "/rebalancing", label: t.rebalancing.title, icon: Scale },
       ],
     },

@@ -55,17 +55,21 @@ export default function DisclosureView({
   const secondsLeft = Math.max(0, Math.floor((expiry.getTime() - now) / 1000));
   const expired = secondsLeft <= 0;
 
-  const requiresAccept = side === "buy" && preview.confirmation.requires_accept_unsuitable;
-  const unsuitableField =
-    findFieldByPath(preview.presentation.sections, "accept_unsuitable") ??
-    findFieldByPath(preview.presentation.sections, "requires_accept_unsuitable");
+  const requiresAccept =
+    side === "buy" && preview.confirmation.requires_appropriateness_warning_acknowledgement;
+  const unsuitableField = findFieldByPath(
+    preview.presentation.sections,
+    "appropriateness_warning_acknowledgement"
+  );
   const unsuitableLabel =
-    unsuitableField?.label || preview.confirmation.accept_unsuitable_flag || "accept_unsuitable";
+    unsuitableField?.label ||
+    preview.confirmation.appropriateness_warning_acknowledgement_flag ||
+    "--acknowledge-appropriateness-warning";
 
   const submitArgs = {
     ...previewArgs,
     confirmationId: preview.confirmation.id,
-    ...(side === "buy" ? { acceptUnsuitable } : {}),
+    ...(side === "buy" ? { acknowledgeAppropriatenessWarning: acceptUnsuitable } : {}),
   };
 
   const canSubmit = !submitting && !expired && (!requiresAccept || acceptUnsuitable);

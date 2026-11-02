@@ -101,7 +101,7 @@ export default function Settings() {
       ]);
       setContext(ctx);
       setPortfolioList(list);
-      if (list.selected_portfolio_id) setActivePortfolioId(list.selected_portfolio_id);
+      if (ctx.context?.portfolio_id) setActivePortfolioId(ctx.context.portfolio_id);
     } catch (err) {
       setContextError(err instanceof Error ? err.message : t.common.loadFailed);
     } finally {
@@ -169,7 +169,7 @@ export default function Settings() {
 
   const person = user?.result?.personOverview;
   const trade = capabilities?.local_trade_controls as LocalTradeControls | undefined;
-  const portfolios = portfolioList?.portfolios ?? [];
+  const portfolios = portfolioList?.portfolios.map((p) => p.portfolio_id) ?? [];
   const contextCommand = renderCliCommand("get_broker_context");
   const listPortfoliosCommand = renderCliCommand("list_broker_portfolios");
   const capabilitiesCommand = renderCliCommand("get_capabilities");

@@ -9,9 +9,9 @@ use serde_json::Value;
 // forward a portfolio id even if the frontend has one selected.
 //
 // The two sides are also not symmetric, and the CLI enforces that:
-//   buy  — `--amount` OR `--shares` (whole shares), and `--accept-unsuitable`
+//   buy  — `--amount` OR `--shares` (whole shares), and `--acknowledge-appropriateness-warning`
 //          on phase 2 when phase 1 flagged the instrument as unsuitable.
-//   sell — `--shares` only (fractional allowed), and no `--accept-unsuitable`.
+//   sell — `--shares` only (fractional allowed), and no `--acknowledge-appropriateness-warning`.
 // Mirroring the real per-side shape here keeps invalid argv off the boundary
 // instead of relying on the CLI to reject it.
 
@@ -72,7 +72,7 @@ pub async fn trade_submit(
     limit_price: Option<String>,
     stop_price: Option<String>,
     venue: Option<String>,
-    accept_unsuitable: Option<bool>,
+    acknowledge_appropriateness_warning: Option<bool>,
 ) -> Result<Value, String> {
     validate::side(&side)?;
     validate::ident(&confirmation_id, "confirmation id")?;
@@ -86,8 +86,8 @@ pub async fn trade_submit(
     if side == "sell" && amount.is_some() {
         return Err("Sell orders must be sized in shares, not an amount".to_string());
     }
-    if side == "sell" && accept_unsuitable.unwrap_or(false) {
-        return Err("--accept-unsuitable applies to buy orders only".to_string());
+    if side == "sell" && acknowledge_appropriateness_warning.unwrap_or(false) {
+        return Err("--acknowledge-appropriateness-warning applies to buy orders only".to_string());
     }
 
     let mut args = vec!["broker", "trade", side.as_str()];
@@ -101,8 +101,8 @@ pub async fn trade_submit(
     args.push("--confirm");
     args.push(&confirmation_id);
     // Buy-only: the CLI rejects this flag on a sell.
-    if side == "buy" && accept_unsuitable.unwrap_or(false) {
-        args.push("--accept-unsuitable");
+    if side == "buy" && acknowledge_appropriateness_warning.unwrap_or(false) {
+        args.push("--acknowledge-appropriateness-warning");
     }
     run_sc_command(&args).await.map_err(|e| e.to_string())
 }

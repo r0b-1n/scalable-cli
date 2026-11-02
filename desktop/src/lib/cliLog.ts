@@ -57,7 +57,6 @@ function each(out: string[], name: string, values: string[]) {
 /** Flags shared by the quote-backed read commands. */
 function quoteOpts(out: string[], a: Args) {
   flag(out, "--include-year-to-date", bool(a, "includeYearToDate"));
-  opt(out, "--quote-source", str(a, "quoteSource"));
 }
 function portfolio(out: string[], a: Args) {
   opt(out, "--portfolio-id", str(a, "portfolioId"));
@@ -70,7 +69,7 @@ const BUILDERS: Record<string, Builder> = {
   get_capabilities: () => ["capabilities"],
 
   get_broker_context: () => ["broker", "context", "show"],
-  list_broker_portfolios: () => ["broker", "context", "list"],
+  list_broker_portfolios: () => ["broker", "portfolios"],
   select_broker_context: (a) => [
     "broker",
     "context",
@@ -100,11 +99,6 @@ const BUILDERS: Record<string, Builder> = {
     const out = ["broker", "overview"];
     portfolio(out, a);
     flag(out, "--include-year-to-date", bool(a, "includeYearToDate"));
-    return out;
-  },
-  get_broker_analytics: (a) => {
-    const out = ["broker", "analytics"];
-    portfolio(out, a);
     return out;
   },
   get_broker_cash_breakdown: (a) => {
@@ -367,7 +361,11 @@ function tradeArgs(a: Args, confirmationId: string | undefined): string[] {
   portfolio(out, a);
   if (confirmationId !== undefined) {
     out.push("--confirm", confirmationId);
-    flag(out, "--accept-unsuitable", bool(a, "acceptUnsuitable"));
+    flag(
+      out,
+      "--acknowledge-appropriateness-warning",
+      bool(a, "acknowledgeAppropriatenessWarning")
+    );
   }
   return out;
 }

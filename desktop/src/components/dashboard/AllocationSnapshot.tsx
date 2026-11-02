@@ -7,8 +7,6 @@ import type { Holding } from "../../api/types";
 /**
  * Quick asset-mix snapshot derived from `getHoldings` valuations, grouped by
  * `security_type` (the one dimension already present on every holding row).
- * The full breakdown by asset class / sector / region / currency lives on
- * the Analytics screen, which reads `getBrokerAnalytics` instead.
  */
 export default function AllocationSnapshot({ holdings }: { holdings: Holding[] }) {
   const { t } = useI18n();

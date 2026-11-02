@@ -2,7 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../store/appStore";
 import { useI18n } from "../../i18n";
 import type { LucideIcon } from "lucide-react";
-import { Plus, Search, Wallet, TrendingUp, Moon, BarChart3 } from "lucide-react";
+import { Plus, Search, Wallet, TrendingUp, Moon } from "lucide-react";
 
 /** Buy, search, and links into the main screens — the fastest paths off the dashboard. */
 export default function QuickActions() {
@@ -21,7 +21,6 @@ export default function QuickActions() {
     { label: t.watchlist.title, icon: Wallet, onClick: () => navigate("/watchlist") },
     { label: t.savings.title, icon: TrendingUp, onClick: () => navigate("/savings-plans") },
     { label: t.overnight.title, icon: Moon, onClick: () => navigate("/overnight") },
-    { label: t.analytics.title, icon: BarChart3, onClick: () => navigate("/analytics") },
   ];
 
   return (

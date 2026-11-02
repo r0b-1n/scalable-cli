@@ -14,7 +14,6 @@ pub fn run() {
             commands::context::list_broker_portfolios,
             commands::context::select_broker_context,
             commands::broker::get_broker_overview,
-            commands::broker::get_broker_analytics,
             commands::broker::get_broker_cash_breakdown,
             commands::broker::get_holdings,
             commands::broker::get_portfolio_groups,

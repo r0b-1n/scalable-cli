@@ -5,7 +5,6 @@ import type {
   OvernightData,
   OvernightTransactionsData,
   BrokerOverviewData,
-  BrokerAnalyticsData,
   BrokerCashBreakdownData,
   HoldingsData,
   TransactionsData,
@@ -74,7 +73,6 @@ async function invokeSc<T>(
 export interface QuoteReadOptions {
   portfolioId?: string;
   includeYearToDate?: boolean;
-  quoteSource?: string;
 }
 
 export const api = {
@@ -117,8 +115,6 @@ export const api = {
       portfolioId,
       includeYearToDate,
     }),
-  getBrokerAnalytics: (portfolioId?: string) =>
-    invokeSc<BrokerAnalyticsData>("get_broker_analytics", { portfolioId }),
   getBrokerCashBreakdown: (portfolioId?: string) =>
     invokeSc<BrokerCashBreakdownData>("get_broker_cash_breakdown", {
       portfolioId,
@@ -127,7 +123,6 @@ export const api = {
     invokeSc<HoldingsData>("get_holdings", {
       portfolioId: opts.portfolioId,
       includeYearToDate: opts.includeYearToDate ?? false,
-      quoteSource: opts.quoteSource,
     }),
 
   getTransactions: (params: {
@@ -154,7 +149,6 @@ export const api = {
       isin,
       portfolioId: opts.portfolioId,
       includeYearToDate: opts.includeYearToDate ?? false,
-      quoteSource: opts.quoteSource,
     }),
   getChart: (isin: string, timeframe: ChartTimeframe) =>
     invokeSc<ChartData>("get_chart", { isin, timeframe }),
@@ -165,7 +159,6 @@ export const api = {
       query,
       portfolioId: opts.portfolioId,
       includeYearToDate: opts.includeYearToDate ?? false,
-      quoteSource: opts.quoteSource,
     }),
 
   /** Every filter `sc broker derivatives search` accepts. */
@@ -201,7 +194,6 @@ export const api = {
     invokeSc<WatchlistData>("get_watchlist", {
       portfolioId: opts.portfolioId,
       includeYearToDate: opts.includeYearToDate ?? false,
-      quoteSource: opts.quoteSource,
     }),
   addToWatchlist: (isin: string, portfolioId?: string) =>
     invokeSc<void>("add_to_watchlist", { isin, portfolioId }),
@@ -280,8 +272,8 @@ export const api = {
     limitPrice?: string;
     stopPrice?: string;
     venue?: string;
-    /** Buy-only: the CLI rejects `--accept-unsuitable` on a sell. */
-    acceptUnsuitable?: boolean;
+    /** Buy-only: the CLI rejects `--acknowledge-appropriateness-warning` on a sell. */
+    acknowledgeAppropriatenessWarning?: boolean;
   }) => invokeSc<TradeSubmitData>("trade_submit", params),
   tradeCancel: (orderId: string, portfolioId?: string) =>
     invokeSc<TradeCancelData>("trade_cancel", { orderId, portfolioId }),

@@ -7,11 +7,9 @@ pub async fn search_securities(
     query: String,
     portfolio_id: Option<String>,
     include_year_to_date: Option<bool>,
-    quote_source: Option<String>,
 ) -> Result<Value, String> {
     validate::text(&query, "search query", 200)?;
     validate::opt(&portfolio_id, |v| validate::ident(v, "portfolio id"))?;
-    validate::opt(&quote_source, |v| validate::code(v, "quote source"))?;
 
     let mut args = vec!["broker", "search", query.as_str()];
     if let Some(id) = &portfolio_id {
@@ -20,10 +18,6 @@ pub async fn search_securities(
     }
     if include_year_to_date.unwrap_or(false) {
         args.push("--include-year-to-date");
-    }
-    if let Some(qs) = &quote_source {
-        args.push("--quote-source");
-        args.push(qs);
     }
     run_sc_command(&args).await.map_err(|e| e.to_string())
 }

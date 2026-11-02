@@ -460,36 +460,6 @@ export const de = {
     selectItems: "Positionen auswählen",
   },
 
-  analytics: {
-    title: "Analyse",
-    subtitle: "Allokation, Risiko und Portfolio-Kennzahlen",
-    allocation: "Allokation",
-    byAssetClass: "Nach Anlageklasse",
-    bySector: "Nach Sektor",
-    byRegion: "Nach Region",
-    byCurrency: "Nach Währung",
-    healthChecks: "Portfolio-Checks",
-    scenarios: "Szenarien",
-    coverage: "Abdeckung",
-    coverageHint: "Anteil des Portfolios, der von der Analyse erfasst wird",
-    invalidSecurities: "Nicht analysierbare Positionen",
-    lastUpdated: "Zuletzt aktualisiert",
-    noAnalysis: "Für dieses Portfolio liegt keine Analyse vor.",
-    equityStyles: "Aktien-Stile",
-    fixedIncome: "Anleihen-Ratings",
-    investmentGrade: "Investment Grade",
-    speculativeGrade: "Spekulativ",
-    unratedGrade: "Ohne Rating",
-    healthStates: {
-      GOOD: "Gut",
-      MEDIUM: "Mittel",
-      NEUTRAL: "Neutral",
-      BAD: "Schlecht",
-    } as Record<string, string>,
-    speculativeWarning:
-      "Enthält spekulative Anleihen mit erhöhtem Ausfallrisiko.",
-  },
-
   orders: {
     title: "Orders",
     subtitle: "Offene Orders und Ausführungshistorie",
@@ -1068,36 +1038,6 @@ export const en: Translations = {
     unassigned: "Positions removed",
     limitReached: "Maximum number of groups reached.",
     selectItems: "Select positions",
-  },
-
-  analytics: {
-    title: "Analytics",
-    subtitle: "Allocation, risk and portfolio metrics",
-    allocation: "Allocation",
-    byAssetClass: "By asset class",
-    bySector: "By sector",
-    byRegion: "By region",
-    byCurrency: "By currency",
-    healthChecks: "Portfolio checks",
-    scenarios: "Scenarios",
-    coverage: "Coverage",
-    coverageHint: "Share of the portfolio covered by the analysis",
-    invalidSecurities: "Positions that cannot be analysed",
-    lastUpdated: "Last updated",
-    noAnalysis: "No analysis available for this portfolio.",
-    equityStyles: "Equity styles",
-    fixedIncome: "Fixed-income ratings",
-    investmentGrade: "Investment grade",
-    speculativeGrade: "Speculative",
-    unratedGrade: "Unrated",
-    healthStates: {
-      GOOD: "Good",
-      MEDIUM: "Medium",
-      NEUTRAL: "Neutral",
-      BAD: "Bad",
-    },
-    speculativeWarning:
-      "Contains speculative bonds with an elevated default risk.",
   },
 
   orders: {

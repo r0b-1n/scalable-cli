@@ -150,10 +150,13 @@ export interface BrokerContextData {
   context: { account_id: string; portfolio_id: string | null } | null;
 }
 
+/** `sc broker portfolios --json`. */
 export interface BrokerPortfolioListData {
-  account_id: string;
-  portfolios: string[];
-  selected_portfolio_id: string | null;
+  portfolios: { portfolio_id: string }[];
+  resolution: {
+    status: "none_available" | "auto_resolved" | "selection_required";
+    auto_resolved_portfolio_id: string | null;
+  };
 }
 
 // ------------------------------------------------------------------ overview
@@ -173,49 +176,6 @@ export type BrokerOverviewData = BrokerEnvelope<{
     valuation_timestamp_utc: string | null;
     inventory_timestamp_utc: string | null;
   };
-}>;
-
-/** One row within an allocation dimension. */
-export interface AllocationPosition {
-  id?: string | null;
-  name?: string | null;
-  /** Value in the account currency. */
-  valuation?: number | null;
-  /** Share of the portfolio as a 0..1 fraction, not a percentage. */
-  weight?: number | null;
-  contributors?: Record<string, unknown>[];
-  subpositions?: Record<string, unknown>[];
-  [key: string]: unknown;
-}
-
-/**
- * One allocation dimension. The rows live in `positions`; the entry itself
- * only carries the dimension `type`.
- */
-export interface AllocationEntry {
-  /** Allocation dimension, e.g. ASSET_CLASS / SECTOR / REGION / CURRENCY. */
-  type?: string | null;
-  id?: string | null;
-  positions?: AllocationPosition[];
-  [key: string]: unknown;
-}
-
-export type BrokerAnalyticsData = BrokerEnvelope<{
-  account_id: string;
-  portfolio_id: string;
-  analysis_type: string;
-  portfolio_coverage: number;
-  result_id?: string | null;
-  last_updated_utc?: string | null;
-  allocations: AllocationEntry[];
-  health_checks: Record<string, unknown>[];
-  scenarios: Record<string, unknown>[];
-  invalid_securities: Record<string, unknown>[];
-  invalid_securities_count: number;
-  equity_company_styles?: Record<string, unknown> | null;
-  fixed_income_ratings?: Record<string, unknown> | null;
-  payments?: Record<string, unknown> | null;
-  trial_period?: Record<string, unknown> | null;
 }>;
 
 /** Cash figures arrive as decimal strings to avoid float drift. */
@@ -271,7 +231,6 @@ export interface Transaction {
   last_event_datetime: string;
   is_cancellation: boolean;
   custodian?: string | null;
-  documents?: unknown[];
   isin?: string | null;
   quantity?: number | null;
   amount?: number | null;
@@ -574,7 +533,6 @@ export interface OvernightTransaction {
   custodian?: string | null;
   cash_transaction_type?: string | null;
   related_isin?: string | null;
-  documents?: unknown[];
 }
 
 export interface OvernightTransactionsData {
@@ -641,8 +599,8 @@ export interface TradePreviewData {
     phase_2_command_template_json?: string;
     expires_at_epoch: number;
     intent_checksum: string;
-    requires_accept_unsuitable: boolean;
-    accept_unsuitable_flag: string | null;
+    requires_appropriateness_warning_acknowledgement: boolean;
+    appropriateness_warning_acknowledgement_flag: string | null;
     warning_version: string | null;
     required_fields: Record<string, string | null>;
   };

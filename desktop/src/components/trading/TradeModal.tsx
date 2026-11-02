@@ -177,7 +177,7 @@ export default function TradeModal() {
       const data = await api.tradeSubmit({
         ...previewArgs,
         confirmationId: preview.confirmation.id,
-        ...(side === "buy" ? { acceptUnsuitable } : {}),
+        ...(side === "buy" ? { acknowledgeAppropriatenessWarning: acceptUnsuitable } : {}),
       });
       setResult(data);
       setStep("result");

@@ -55,7 +55,7 @@ export default function SavingsPlanDisclosure({
   const secondsLeft = Math.max(0, Math.floor((expiry.getTime() - now) / 1000));
   const expired = secondsLeft <= 0;
 
-  const requiresAccept = confirmation.requires_accept_unsuitable;
+  const requiresAccept = confirmation.requires_appropriateness_warning_acknowledgement;
   // The disclosure itself carries the CLI's own copy for this acknowledgement
   // when it appears as a warning/suitability field; fall back to the raw
   // flag name only if no such field is present.
@@ -63,7 +63,7 @@ export default function SavingsPlanDisclosure({
     Object.values(presentation.sections)
       .flatMap((s) => s.fields)
       .find((f) => f.path?.toLowerCase().includes("accept_unsuitable") || f.path?.toLowerCase().includes("appropriateness"))
-      ?.label || confirmation.accept_unsuitable_flag || "accept_unsuitable";
+      ?.label || confirmation.appropriateness_warning_acknowledgement_flag || "accept_unsuitable";
 
   const confirmArgs = {
     ...previewArgs,

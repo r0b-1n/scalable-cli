@@ -12,7 +12,6 @@ import PortfolioGate from "./components/auth/PortfolioGate";
 import Dashboard from "./components/dashboard/Dashboard";
 import Portfolio from "./components/portfolio/Portfolio";
 import PortfolioGroups from "./components/groups/PortfolioGroups";
-import Analytics from "./components/analytics/Analytics";
 import Rebalancing from "./components/rebalancing/Rebalancing";
 import Orders from "./components/orders/Orders";
 import Derivatives from "./components/derivatives/Derivatives";
@@ -81,7 +80,7 @@ export default function App() {
     const checkContext = async () => {
       try {
         const list = await api.listBrokerPortfolios().catch(() => null);
-        const portfolios = list?.portfolios ?? [];
+        const portfolios = list?.portfolios.map((p) => p.portfolio_id) ?? [];
         if (!cancelled && portfolios.length > 0) setAvailablePortfolios(portfolios);
 
         const ctx = await api.getBrokerContext();
@@ -148,7 +147,6 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/portfolio" element={<Portfolio />} />
             <Route path="/groups" element={<PortfolioGroups />} />
-            <Route path="/analytics" element={<Analytics />} />
             <Route path="/rebalancing" element={<Rebalancing />} />
             <Route path="/orders" element={<Orders />} />
             <Route path="/derivatives" element={<Derivatives />} />

@@ -11,7 +11,7 @@ pub async fn get_broker_context() -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn list_broker_portfolios() -> Result<Value, String> {
-    run_sc_command(&["broker", "context", "list"])
+    run_sc_command(&["broker", "portfolios"])
         .await
         .map_err(|e| e.to_string())
 }

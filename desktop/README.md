@@ -31,7 +31,6 @@ the result. Anything the app can do, you can do in a terminal — and the app sh
 | Dashboard | `/` | `broker overview`, `cash-breakdown`, `holdings`, `transactions`, `overnight` |
 | Positions | `/portfolio` | `broker holdings` (+ `--include-year-to-date`) |
 | Groups | `/groups` | `broker portfolio-groups` + `create/update/delete/assign/unassign` |
-| Analytics | `/analytics` | `broker analytics` |
 | Rebalancing | `/rebalancing` | `broker holdings` + `trade buy/sell` (preview) |
 | Orders | `/orders` | `broker transactions --status …`, `trade cancel`, `transaction details` |
 | Derivatives | `/derivatives` | `broker derivatives search` (every filter), `quote`, `chart` |
@@ -43,7 +42,7 @@ the result. Anything the app can do, you can do in a terminal — and the app sh
 | Income report | `/reports/income` | `broker transactions`, `overnight transactions` |
 | Cost report | `/reports/costs` | `broker transactions`, `broker transaction details` |
 | Security | `/security/:isin` | `broker quote`, `chart`, `security-news`, `transactions`, `holdings` |
-| Settings | `/settings` | `broker context show/list/select`, `capabilities`, `whoami` |
+| Settings | `/settings` | `broker context show/select`, `broker portfolios`, `capabilities`, `whoami` |
 | CLI console | `/cli` | `capabilities` + the session command log |
 
 Composite views — rebalancing, the income and cost reports, group-level P&L, the savings-plan

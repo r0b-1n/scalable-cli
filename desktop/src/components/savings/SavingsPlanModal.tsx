@@ -206,7 +206,7 @@ export default function SavingsPlanModal({
       await api.addSavingsPlan({
         ...previewArgs,
         confirm: confirmation.id,
-        ...(confirmation.requires_accept_unsuitable
+        ...(confirmation.requires_appropriateness_warning_acknowledgement
           ? {
               acknowledgedAppropriatenessWarningVersion: confirmation.warning_version ?? undefined,
               appropriatenessId: confirmation.required_fields?.appropriateness_id ?? undefined,
