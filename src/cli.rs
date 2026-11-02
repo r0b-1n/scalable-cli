@@ -35,6 +35,8 @@ pub enum Commands {
     Whoami(WhoamiArgs),
     #[command(about = "Show overnight savings account summary")]
     Overnight(OvernightArgs),
+    #[command(about = "Read personal Fixed-Term savings accounts")]
+    FixedTerm(FixedTermArgs),
     #[command(about = "Broker commands")]
     Broker(BrokerArgs),
     #[command(about = "List CLI capabilities")]
@@ -58,6 +60,35 @@ pub struct LogoutArgs {
 
 #[derive(Debug, Args)]
 pub struct WhoamiArgs {
+    #[arg(long, help = "Print compact JSON")]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct FixedTermArgs {
+    #[command(subcommand)]
+    pub command: FixedTermCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum FixedTermCommand {
+    #[command(about = "List supported personal Fixed-Term accounts")]
+    List(FixedTermListArgs),
+    #[command(about = "Show a personal Fixed-Term account, including its auto-renewal setting")]
+    Details(FixedTermDetailsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct FixedTermListArgs {
+    #[arg(long, help = "Print compact JSON")]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct FixedTermDetailsArgs {
+    #[arg(long, value_parser = non_empty_trimmed_value, help = "Account id returned by fixed-term list")]
+    pub fixed_term_account_id: String,
+
     #[arg(long, help = "Print compact JSON")]
     pub json: bool,
 }
@@ -127,10 +158,10 @@ pub struct BrokerArgs {
 pub enum BrokerCommand {
     #[command(about = "Show or persist broker account/portfolio context")]
     Context(BrokerContextArgs),
+    #[command(about = "List accessible broker portfolios and their resolution state")]
+    Portfolios(BrokerPortfoliosArgs),
     #[command(about = "Get broker portfolio overview/valuation")]
     Overview(BrokerOverviewArgs),
-    #[command(about = "Explore broker portfolio analytics")]
-    Analytics(BrokerAnalyticsArgs),
     #[command(
         about = "Get broker cash, buying-power, credit, and derivatives-availability breakdown"
     )]
@@ -141,6 +172,8 @@ pub enum BrokerCommand {
     Transaction(BrokerTransactionArgs),
     #[command(about = "Get broker portfolio holdings")]
     Holdings(BrokerHoldingsArgs),
+    #[command(about = "List supported order venues enabled for a broker portfolio")]
+    OrderVenues(BrokerOrderVenuesArgs),
     #[command(about = "List broker portfolio groups and ungrouped holdings")]
     PortfolioGroups(BrokerPortfolioGroupsArgs),
     #[command(about = "List, add, or remove broker portfolio watchlist entries")]
@@ -149,7 +182,7 @@ pub enum BrokerCommand {
     Search(BrokerSearchArgs),
     #[command(about = "Discover derivatives for a known underlying ISIN")]
     Derivatives(BrokerDerivativesArgs),
-    #[command(about = "Get historical chart data for a security ISIN")]
+    #[command(about = "Get historical chart data for a portfolio or security")]
     Chart(BrokerChartArgs),
     #[command(about = "Get the current quote for a security ISIN")]
     Quote(BrokerQuoteArgs),
@@ -193,6 +226,12 @@ pub struct BrokerContextSelectArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct BrokerPortfoliosArgs {
+    #[arg(long, help = "Print compact JSON")]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct BrokerOverviewArgs {
     #[arg(long, help = "Portfolio id override")]
     pub portfolio_id: Option<String>,
@@ -205,7 +244,7 @@ pub struct BrokerOverviewArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct BrokerAnalyticsArgs {
+pub struct BrokerCashBreakdownArgs {
     #[arg(long, help = "Portfolio id override")]
     pub portfolio_id: Option<String>,
 
@@ -214,7 +253,7 @@ pub struct BrokerAnalyticsArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct BrokerCashBreakdownArgs {
+pub struct BrokerOrderVenuesArgs {
     #[arg(long, help = "Portfolio id override")]
     pub portfolio_id: Option<String>,
 
@@ -237,6 +276,9 @@ pub struct BrokerTransactionsArgs {
 
     #[arg(long, help = "Pagination cursor from a previous response")]
     pub cursor: Option<String>,
+
+    #[arg(long, help = "Crypto pagination cursor from a previous response")]
+    pub crypto_cursor: Option<String>,
 
     #[arg(
         long = "type-filter",
@@ -263,6 +305,9 @@ pub struct BrokerTransactionsArgs {
 
     #[arg(long, help = "Optional security ISIN filter")]
     pub isin: Option<String>,
+
+    #[arg(long, help = "Optional crypto ticker filter")]
+    pub crypto_ticker: Option<String>,
 
     #[arg(long, help = "Include reinvestment subtypes")]
     pub include_reinvestment_subtypes: bool,
@@ -302,9 +347,6 @@ pub struct BrokerHoldingsArgs {
 
     #[arg(long, help = "Include year-to-date performance points for quote ticks")]
     pub include_year_to_date: bool,
-
-    #[arg(long, help = "Optional market data source (for example CONSOLIDATED)")]
-    pub quote_source: Option<String>,
 
     #[arg(long, help = "Print compact JSON")]
     pub json: bool,
@@ -436,9 +478,6 @@ pub struct BrokerWatchlistArgs {
     #[arg(long, help = "Include year-to-date performance points for quote ticks")]
     pub include_year_to_date: bool,
 
-    #[arg(long, help = "Optional market data source (for example CONSOLIDATED)")]
-    pub quote_source: Option<String>,
-
     #[arg(long, help = "Print compact JSON")]
     pub json: bool,
 }
@@ -485,9 +524,6 @@ pub struct BrokerSearchArgs {
 
     #[arg(long, help = "Include year-to-date performance points for quote ticks")]
     pub include_year_to_date: bool,
-
-    #[arg(long, help = "Optional market data source (for example CONSOLIDATED)")]
-    pub quote_source: Option<String>,
 
     #[arg(long, help = "Print compact JSON")]
     pub json: bool,
@@ -729,9 +765,6 @@ pub struct BrokerQuoteArgs {
     #[arg(long, help = "Include year-to-date performance points for quote ticks")]
     pub include_year_to_date: bool,
 
-    #[arg(long, help = "Optional market data source (for example CONSOLIDATED)")]
-    pub quote_source: Option<String>,
-
     #[arg(long, help = "Print compact JSON")]
     pub json: bool,
 }
@@ -786,8 +819,15 @@ impl BrokerChartTimeframe {
 
 #[derive(Debug, Args)]
 pub struct BrokerChartArgs {
-    #[arg(long, help = "Security ISIN")]
-    pub isin: String,
+    #[arg(
+        long,
+        conflicts_with = "portfolio_id",
+        help = "Security ISIN (omit for portfolio history)"
+    )]
+    pub isin: Option<String>,
+
+    #[arg(long, help = "Portfolio id override for portfolio history")]
+    pub portfolio_id: Option<String>,
 
     #[arg(long, value_enum, help = "Chart timeframe")]
     pub timeframe: BrokerChartTimeframe,
@@ -1025,6 +1065,7 @@ pub enum BrokerTradeOrderType {
     Market,
     Limit,
     Stop,
+    StopLimit,
 }
 
 #[derive(Debug, Args)]
@@ -1047,13 +1088,19 @@ pub struct BrokerTradeBuyArgs {
     #[arg(long, value_enum, default_value_t = BrokerTradeOrderType::Market, help = "Order type")]
     pub order_type: BrokerTradeOrderType,
 
-    #[arg(long, help = "Limit price (required for --order-type limit)")]
+    #[arg(
+        long,
+        help = "Execution price limit (required for --order-type limit or stop-limit)"
+    )]
     pub limit_price: Option<String>,
 
-    #[arg(long, help = "Stop price (required for --order-type stop)")]
+    #[arg(
+        long,
+        help = "Activation trigger price (required for --order-type stop or stop-limit)"
+    )]
     pub stop_price: Option<String>,
 
-    #[arg(long, help = "Trading venue override (e.g. MUNC, XETR)")]
+    #[arg(long, help = crate::trade_venue::VENUE_OVERRIDE_HELP)]
     pub venue: Option<String>,
 
     #[arg(
@@ -1064,10 +1111,11 @@ pub struct BrokerTradeBuyArgs {
 
     #[arg(
         long,
+        alias = "accept-unsuitable",
         requires = "confirm",
-        help = "Phase 2 acknowledgement required when phase 1 marks the instrument as not suitable"
+        help = "Acknowledge the appropriateness warning when required by the phase 1 preview (phase 2 only)"
     )]
-    pub accept_unsuitable: bool,
+    pub acknowledge_appropriateness_warning: bool,
 
     #[arg(long, help = "Print compact JSON")]
     pub json: bool,
@@ -1087,13 +1135,19 @@ pub struct BrokerTradeSellArgs {
     #[arg(long, value_enum, default_value_t = BrokerTradeOrderType::Market, help = "Order type")]
     pub order_type: BrokerTradeOrderType,
 
-    #[arg(long, help = "Limit price (required for --order-type limit)")]
+    #[arg(
+        long,
+        help = "Execution price limit (required for --order-type limit or stop-limit)"
+    )]
     pub limit_price: Option<String>,
 
-    #[arg(long, help = "Stop price (required for --order-type stop)")]
+    #[arg(
+        long,
+        help = "Activation trigger price (required for --order-type stop or stop-limit)"
+    )]
     pub stop_price: Option<String>,
 
-    #[arg(long, help = "Trading venue override (e.g. MUNC, XETR)")]
+    #[arg(long, help = crate::trade_venue::VENUE_OVERRIDE_HELP)]
     pub venue: Option<String>,
 
     #[arg(
@@ -1279,27 +1333,6 @@ mod tests {
     }
 
     #[test]
-    fn broker_analytics_parses() {
-        let cli = Cli::parse_from([
-            "sc",
-            "broker",
-            "analytics",
-            "--portfolio-id",
-            "p1",
-            "--json",
-        ]);
-        match cli.command {
-            Commands::Broker(BrokerArgs {
-                command: BrokerCommand::Analytics(args),
-            }) => {
-                assert_eq!(args.portfolio_id.as_deref(), Some("p1"));
-                assert!(args.json);
-            }
-            _ => panic!("broker analytics should parse"),
-        }
-    }
-
-    #[test]
     fn broker_cash_breakdown_parses() {
         let cli = Cli::parse_from([
             "sc",
@@ -1321,6 +1354,27 @@ mod tests {
     }
 
     #[test]
+    fn broker_order_venues_parses() {
+        let cli = Cli::parse_from([
+            "sc",
+            "broker",
+            "order-venues",
+            "--portfolio-id",
+            "p1",
+            "--json",
+        ]);
+        match cli.command {
+            Commands::Broker(BrokerArgs {
+                command: BrokerCommand::OrderVenues(args),
+            }) => {
+                assert_eq!(args.portfolio_id.as_deref(), Some("p1"));
+                assert!(args.json);
+            }
+            _ => panic!("broker order-venues should parse"),
+        }
+    }
+
+    #[test]
     fn broker_transactions_parses() {
         let cli = Cli::parse_from([
             "sc",
@@ -1332,6 +1386,8 @@ mod tests {
             "50",
             "--cursor",
             "c1",
+            "--crypto-cursor",
+            "cc1",
             "--type-filter",
             "buy",
             "--type-filter",
@@ -1348,6 +1404,8 @@ mod tests {
             "2026-03-10T23:59:59Z",
             "--isin",
             "US0378331005",
+            "--crypto-ticker",
+            "btc",
             "--include-reinvestment-subtypes",
             "--json",
         ]);
@@ -1358,12 +1416,14 @@ mod tests {
                 assert_eq!(args.portfolio_id.as_deref(), Some("p1"));
                 assert_eq!(args.page_size, 50);
                 assert_eq!(args.cursor.as_deref(), Some("c1"));
+                assert_eq!(args.crypto_cursor.as_deref(), Some("cc1"));
                 assert_eq!(args.type_filter, vec!["buy", "distribution"]);
                 assert_eq!(args.status, vec!["filled", "settled"]);
                 assert_eq!(args.search_term.as_deref(), Some("apple"));
                 assert_eq!(args.from_time.as_deref(), Some("2026-03-01T00:00:00Z"));
                 assert_eq!(args.to_time.as_deref(), Some("2026-03-10T23:59:59Z"));
                 assert_eq!(args.isin.as_deref(), Some("US0378331005"));
+                assert_eq!(args.crypto_ticker.as_deref(), Some("btc"));
                 assert!(args.include_reinvestment_subtypes);
                 assert!(args.json);
             }
@@ -1380,6 +1440,8 @@ mod tests {
             }) => {
                 assert_eq!(args.page_size, 20);
                 assert!(args.cursor.is_none());
+                assert!(args.crypto_cursor.is_none());
+                assert!(args.crypto_ticker.is_none());
                 assert!(args.type_filter.is_empty());
                 assert!(args.status.is_empty());
                 assert!(!args.include_reinvestment_subtypes);
@@ -1432,8 +1494,6 @@ mod tests {
             "--portfolio-id",
             "p1",
             "--include-year-to-date",
-            "--quote-source",
-            "CONSOLIDATED",
             "--json",
         ]);
         match cli.command {
@@ -1443,7 +1503,6 @@ mod tests {
                 assert!(args.command.is_none());
                 assert_eq!(args.portfolio_id.as_deref(), Some("p1"));
                 assert!(args.include_year_to_date);
-                assert_eq!(args.quote_source.as_deref(), Some("CONSOLIDATED"));
                 assert!(args.json);
             }
             _ => panic!("broker watchlist should parse"),
@@ -1612,8 +1671,6 @@ mod tests {
             "--isin",
             "US0378331005",
             "--include-year-to-date",
-            "--quote-source",
-            "CONSOLIDATED",
             "--json",
         ]);
         match cli.command {
@@ -1623,7 +1680,6 @@ mod tests {
                 assert_eq!(args.portfolio_id.as_deref(), Some("p1"));
                 assert_eq!(args.isin, "US0378331005");
                 assert!(args.include_year_to_date);
-                assert_eq!(args.quote_source.as_deref(), Some("CONSOLIDATED"));
                 assert!(args.json);
             }
             _ => panic!("broker quote should parse"),
@@ -1646,12 +1702,60 @@ mod tests {
             Commands::Broker(BrokerArgs {
                 command: BrokerCommand::Chart(args),
             }) => {
-                assert_eq!(args.isin, "US0378331005");
+                assert_eq!(args.isin.as_deref(), Some("US0378331005"));
                 assert_eq!(args.timeframe, BrokerChartTimeframe::OneMonth);
                 assert!(args.json);
             }
             _ => panic!("broker chart should parse"),
         }
+    }
+
+    #[test]
+    fn broker_chart_portfolio_forms_parse_and_require_timeframe() {
+        for argv in [
+            vec!["sc", "broker", "chart", "--timeframe", "1y"],
+            vec![
+                "sc",
+                "broker",
+                "chart",
+                "--portfolio-id",
+                "port-1",
+                "--timeframe",
+                "ytd",
+                "--json",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("portfolio chart");
+            assert!(matches!(
+                cli.command,
+                Commands::Broker(BrokerArgs {
+                    command: BrokerCommand::Chart(_)
+                })
+            ));
+        }
+        assert_eq!(
+            Cli::try_parse_from(["sc", "broker", "chart"])
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn broker_chart_rejects_conflicting_targets() {
+        let err = Cli::try_parse_from([
+            "sc",
+            "broker",
+            "chart",
+            "--isin",
+            "US0378331005",
+            "--portfolio-id",
+            "port-1",
+            "--timeframe",
+            "1y",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -2050,9 +2154,22 @@ mod tests {
                 assert_eq!(args.limit_price, None);
                 assert_eq!(args.stop_price, None);
                 assert_eq!(args.confirm, None);
-                assert!(!args.accept_unsuitable);
+                assert!(!args.acknowledge_appropriateness_warning);
             }
             _ => panic!("broker trade buy should parse"),
+        }
+    }
+
+    #[test]
+    fn broker_trade_leaf_help_describes_supported_venue_names_and_mics() {
+        for side in ["buy", "sell"] {
+            let err = Cli::try_parse_from(["sc", "broker", "trade", side, "--help"])
+                .expect_err("help should short-circuit parsing");
+            let help = err.to_string();
+
+            for venue in ["gettex/MUNC", "xetra/XETR", "eix/SEIX"] {
+                assert!(help.contains(venue), "{side} help should include {venue}");
+            }
         }
     }
 
@@ -2118,7 +2235,7 @@ mod tests {
                 assert_eq!(args.limit_price, None);
                 assert_eq!(args.stop_price, None);
                 assert_eq!(args.confirm, None);
-                assert!(!args.accept_unsuitable);
+                assert!(!args.acknowledge_appropriateness_warning);
             }
             _ => panic!("broker trade buy shares should parse"),
         }
@@ -2157,58 +2274,68 @@ mod tests {
 
     #[test]
     fn broker_trade_buy_confirm_parses() {
-        let cli = Cli::parse_from([
-            "sc",
-            "broker",
-            "trade",
-            "buy",
-            "--isin",
-            "US0378331005",
-            "--amount",
-            "500",
-            "--venue",
-            "MUNC",
-            "--confirm",
-            "scb1_deadbeef",
+        for acknowledgement_flag in [
+            "--acknowledge-appropriateness-warning",
             "--accept-unsuitable",
-        ]);
-        match cli.command {
-            Commands::Broker(BrokerArgs {
-                command:
-                    BrokerCommand::Trade(BrokerTradeArgs {
-                        command: BrokerTradeCommand::Buy(args),
-                    }),
-            }) => {
-                assert_eq!(args.confirm.as_deref(), Some("scb1_deadbeef"));
-                assert_eq!(args.isin.as_deref(), Some("US0378331005"));
-                assert_eq!(args.amount.as_deref(), Some("500"));
-                assert_eq!(args.shares, None);
-                assert_eq!(args.venue.as_deref(), Some("MUNC"));
-                assert!(args.accept_unsuitable);
+        ] {
+            let cli = Cli::parse_from([
+                "sc",
+                "broker",
+                "trade",
+                "buy",
+                "--isin",
+                "US0378331005",
+                "--amount",
+                "500",
+                "--venue",
+                "MUNC",
+                "--confirm",
+                "scb1_deadbeef",
+                acknowledgement_flag,
+            ]);
+            match cli.command {
+                Commands::Broker(BrokerArgs {
+                    command:
+                        BrokerCommand::Trade(BrokerTradeArgs {
+                            command: BrokerTradeCommand::Buy(args),
+                        }),
+                }) => {
+                    assert_eq!(args.confirm.as_deref(), Some("scb1_deadbeef"));
+                    assert_eq!(args.isin.as_deref(), Some("US0378331005"));
+                    assert_eq!(args.amount.as_deref(), Some("500"));
+                    assert_eq!(args.shares, None);
+                    assert_eq!(args.venue.as_deref(), Some("MUNC"));
+                    assert!(args.acknowledge_appropriateness_warning);
+                }
+                _ => panic!("broker trade buy confirm should parse"),
             }
-            _ => panic!("broker trade buy confirm should parse"),
         }
     }
 
     #[test]
-    fn broker_trade_buy_accept_unsuitable_requires_confirm() {
-        let err = Cli::try_parse_from([
-            "sc",
-            "broker",
-            "trade",
-            "buy",
-            "--isin",
-            "US0378331005",
-            "--amount",
-            "500",
+    fn broker_trade_buy_acknowledge_appropriateness_warning_requires_confirm() {
+        for acknowledgement_flag in [
+            "--acknowledge-appropriateness-warning",
             "--accept-unsuitable",
-        ])
-        .unwrap_err();
+        ] {
+            let err = Cli::try_parse_from([
+                "sc",
+                "broker",
+                "trade",
+                "buy",
+                "--isin",
+                "US0378331005",
+                "--amount",
+                "500",
+                acknowledgement_flag,
+            ])
+            .unwrap_err();
 
-        assert!(
-            err.to_string().contains("--confirm"),
-            "unexpected error: {err}"
-        );
+            assert!(
+                err.to_string().contains("--confirm"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     #[test]
