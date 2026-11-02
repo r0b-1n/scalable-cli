@@ -17,7 +17,7 @@ plain **JSON CLI** for scripts.
 | Tool | Content | Sources |
 |---|---|---|
 | `get_portfolio_snapshot` | valuation and returns, cash and buying power, every position with weight and price vs FIFO, concentration (top-1/top-5, Herfindahl index, mix by type), open orders, savings plans, watchlist, price alerts, overnight savings, local trade controls | `sc` |
-| `get_security_dossier` | quote and performances; 1y and max-history metrics (return, annualised volatility, max drawdown, distance from high/low, SMA 20/50/200, RSI 14, CAGR); position, transactions, savings plans, alerts; Scalable news; identity; SEC fundamentals (TTM revenue, gross/operating/net margin, growth, EPS, cash flow, FCF, cash, debt, equity, shares) with valuation (P/E, P/S, FCF yield, FX-converted); recent filings and insider-filing count; worldwide news; FX | `sc`, OpenFIGI, SEC EDGAR, ECB, GDELT |
+| `get_security_dossier` | quote and performances; 1y and max-history metrics (return, annualised volatility, max drawdown, distance from high/low, SMA 20/50/200, RSI 14, CAGR); position, transactions, savings plans, alerts; Scalable news; identity; SEC fundamentals (TTM revenue, gross/operating/net margin, growth, EPS, dividends per share, cash flow, FCF, cash, debt, equity, shares) with valuation (P/E, P/S, FCF yield, dividend yield, FX-converted); recent filings and insider-filing count; worldwide news; FX | `sc`, OpenFIGI, SEC EDGAR, ECB, GDELT |
 | `scan_securities` | fast triage of holdings, watchlist or a custom ISIN list: price, freshness, performances, 1y metrics | `sc` |
 | `search_securities` | tradable securities by name, ticker, WKN or ISIN | `sc` |
 | `get_market_context` | ECB reference FX rates and key policy rates | ECB |
@@ -49,15 +49,17 @@ hides the others.
 | [ECB Data Portal](https://data.ecb.europa.eu/help/api/overview) | EUR reference FX, key rates | none | |
 | [GDELT DOC 2.0](https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/) | worldwide news coverage | none | about one request every 5 seconds |
 
-Fundamentals exist for SEC registrants: US companies (10-K/10-Q), and foreign filers (20-F/40-F,
-often IFRS) when the security's ticker is also the SEC ticker (SAP is in both places). Foreign
-companies whose US ADR trades under a different ticker (Novo Nordisk is NOVOB in Copenhagen and
-NVO on the SEC) are not resolved yet and show `unavailable`. Before using a ticker, the SEC company
-name is matched against the security name, so a ticker collision (ALV is Allianz in Frankfurt
-and Autoliv on the SEC) never attaches another company's numbers.
+Fundamentals exist for SEC registrants: US companies (10-K/10-Q) and foreign filers (20-F/40-F,
+often IFRS). The SEC registrant is found by ticker, and the company name must agree, so a ticker
+collision (ALV is Allianz in Frankfurt and Autoliv on the SEC) never attaches another company's
+numbers. If the ticker gives no match, an exact, unique company-name match is used instead. That
+covers ADRs listed under another ticker: Novo Nordisk is NOVOB in Copenhagen and NVO on the SEC.
+`matched_by` says which rule applied.
 
 TTM figures are calculated as latest annual + current year-to-date − prior year-to-date. EPS TTM
-is an additive approximation. Restated values replace earlier filings for the same period.
+is an additive approximation. Restated values replace earlier filings for the same period. Where
+a company changed XBRL concepts over time, the concept with the most recent data is used. Facts
+older than 550 days are flagged `stale` and left out of ratios and valuation.
 
 ## Setup
 

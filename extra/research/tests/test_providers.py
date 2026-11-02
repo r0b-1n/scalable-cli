@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 import unittest
 
@@ -11,9 +12,29 @@ from .helpers import fixture
 class EdgarFundamentals(unittest.TestCase):
     """Real Apple companyfacts (trimmed) captured from data.sec.gov."""
 
+    TODAY = dt.date(2026, 11, 3)  # fixture capture date; pins the staleness check
+
     @classmethod
     def setUpClass(cls):
-        cls.fund = edgar.fundamentals(fixture("edgar_companyfacts_aapl.json"))
+        cls.fund = edgar.fundamentals(fixture("edgar_companyfacts_aapl.json"), today=cls.TODAY)
+
+    def test_freshest_concept_wins(self):
+        # `Revenues` (ends 2018) and DividendsPerShareCashPaid (ends 2013) are older alternatives.
+        self.assertEqual(self.fund["metrics"]["revenue"]["concept"], "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax")
+        self.assertEqual(self.fund["metrics"]["dividends_per_share"]["concept"], "us-gaap:CommonStockDividendsPerShareDeclared")
+
+    def test_dividends(self):
+        dps = self.fund["ratios"]["dividends_per_share_ttm"]
+        self.assertGreater(dps, 0.9)
+        self.assertLess(dps, 1.2)
+        self.assertEqual(edgar.valuation(self.fund, 200.0)["dividend_yield_pct"], round(dps / 200 * 100, 2))
+
+    def test_stale_facts_are_excluded(self):
+        old = edgar.fundamentals(fixture("edgar_companyfacts_aapl.json"), today=dt.date(2029, 1, 1))
+        self.assertTrue(old["metrics"]["revenue"]["ttm"]["stale"])
+        self.assertIsNone(old["ratios"]["net_margin_pct"])
+        self.assertIsNone(edgar.valuation(old, 200.0)["pe_ttm"])
+        self.assertFalse(self.fund["metrics"]["revenue"]["ttm"]["stale"])
 
     def test_ttm_uses_latest_annual_plus_ytd_minus_prior_ytd(self):
         rev = self.fund["metrics"]["revenue"]
@@ -51,15 +72,33 @@ class EdgarFundamentals(unittest.TestCase):
 
 
 class EdgarIdentity(unittest.TestCase):
-    TICKERS = {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, "1": {"cik_str": 1, "ticker": "ALV", "title": "Autoliv Inc"}}
+    TICKERS = {
+        "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+        "1": {"cik_str": 1, "ticker": "ALV", "title": "Autoliv Inc"},
+        "2": {"cik_str": 353278, "ticker": "NVO", "title": "NOVO NORDISK A S"},
+        "3": {"cik_str": 7, "ticker": "ABC", "title": "Acme Corp"},
+        "4": {"cik_str": 8, "ticker": "ABD", "title": "ACME Inc."},
+    }
 
     def test_find_cik(self):
-        self.assertEqual(edgar.find_cik(self.TICKERS, "aapl", "APPLE INC")["cik"], 320193)
+        found = edgar.find_cik(self.TICKERS, "aapl", "APPLE INC")
+        self.assertEqual((found["cik"], found["matched_by"]), (320193, "ticker"))
 
     def test_ticker_collision_is_rejected(self):
         # Allianz trades as ALV in Germany; on SEC that ticker is Autoliv.
         with self.assertRaises(Unavailable):
             edgar.find_cik(self.TICKERS, "ALV", "Allianz SE")
+
+    def test_adr_resolved_by_exact_name(self):
+        # Home ticker NOVOB is unknown to the SEC; the ADR files as NVO.
+        found = edgar.find_cik(self.TICKERS, "NOVOB", "Novo Nordisk A/S")
+        self.assertEqual((found["cik"], found["ticker"], found["matched_by"]), (353278, "NVO", "name"))
+
+    def test_name_fallback_needs_a_unique_exact_match(self):
+        with self.assertRaises(Unavailable):
+            edgar.find_cik(self.TICKERS, None, "Acme")  # two registrants share the name
+        with self.assertRaises(Unavailable):
+            edgar.find_cik(self.TICKERS, None, "Novo Holdings")  # partial overlap is not identity
 
     def test_user_agent_required(self):
         import os

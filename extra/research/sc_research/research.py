@@ -125,11 +125,8 @@ class Research:
                 raise Unavailable("identity (OpenFIGI) unavailable, cannot resolve SEC ticker")
             ident = identity["data"]
             listing = ident.get("us_listing") or ident.get("primary") or {}
-            ticker = listing.get("ticker")
-            if not ticker:
-                raise Unavailable("no ticker for SEC lookup")
             tickers, _ = self._cached("sec:tickers", edgar.TICKERS_TTL, edgar.company_tickers)
-            return edgar.find_cik(tickers, ticker, name or listing.get("name") or "")
+            return edgar.find_cik(tickers, listing.get("ticker"), name or listing.get("name") or "")
 
         def facts() -> tuple[Any, float]:
             found = cik()

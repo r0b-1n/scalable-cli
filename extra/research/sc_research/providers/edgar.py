@@ -47,6 +47,11 @@ FLOW_CONCEPTS: dict[str, list[tuple[str, str]]] = {
         ("us-gaap", "NetCashProvidedByUsedInOperatingActivities"),
         ("ifrs-full", "CashFlowsFromUsedInOperatingActivities"),
     ],
+    "dividends_per_share": [
+        ("us-gaap", "CommonStockDividendsPerShareDeclared"),
+        ("us-gaap", "CommonStockDividendsPerShareCashPaid"),
+        ("ifrs-full", "DividendsRecognisedAsDistributionsToOwnersPerShare"),
+    ],
     "capex": [
         ("us-gaap", "PaymentsToAcquirePropertyPlantAndEquipment"),
         ("ifrs-full", "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"),
@@ -89,13 +94,36 @@ def names_match(a: str, b: str) -> bool:
     return bool(_norm(a) & _norm(b))
 
 
-def find_cik(tickers: dict[str, Any], ticker: str, expected_name: str) -> dict[str, Any]:
-    for row in tickers.values():
-        if str(row.get("ticker", "")).upper() == ticker.upper():
-            if not names_match(row.get("title", ""), expected_name):
-                raise Unavailable(f"SEC ticker {ticker} belongs to {row.get('title')!r}, not {expected_name!r}")
-            return {"cik": int(row["cik_str"]), "title": row.get("title"), "ticker": row.get("ticker")}
-    raise Unavailable(f"No SEC registrant with ticker {ticker}")
+def _name_key(name: str) -> frozenset[str]:
+    """Strict identity for name lookup: 'Novo Nordisk A/S' == 'NOVO NORDISK A S'."""
+    return frozenset(w for w in _norm(name) if len(w) > 1)
+
+
+def find_cik(tickers: dict[str, Any], ticker: str | None, expected_name: str) -> dict[str, Any]:
+    """Resolve by ticker (name-checked), else by an exact company-name match.
+
+    The name fallback covers foreign companies whose US ADR trades under a
+    different ticker than the home listing (NOVOB in Copenhagen, NVO on the
+    SEC); it only accepts a single, exact match.
+    """
+    rows = list(tickers.values())
+    collision = None
+    if ticker:
+        for row in rows:
+            if str(row.get("ticker", "")).upper() == ticker.upper():
+                if names_match(row.get("title", ""), expected_name):
+                    return {"cik": int(row["cik_str"]), "title": row.get("title"), "ticker": row.get("ticker"), "matched_by": "ticker"}
+                collision = row.get("title")
+                break
+    key = _name_key(expected_name)
+    if key:
+        hits = [r for r in rows if _name_key(r.get("title", "")) == key]
+        if len({int(r["cik_str"]) for r in hits}) == 1:
+            row = hits[0]
+            return {"cik": int(row["cik_str"]), "title": row.get("title"), "ticker": row.get("ticker"), "matched_by": "name"}
+    if collision:
+        raise Unavailable(f"SEC ticker {ticker} belongs to {collision!r}, not {expected_name!r}")
+    raise Unavailable(f"No SEC registrant found for {expected_name!r} (ticker {ticker})")
 
 
 def company_tickers() -> dict[str, Any]:
@@ -120,16 +148,32 @@ def _days(f: dict[str, Any]) -> int | None:
     return (_date(f["end"]) - _date(f["start"])).days if f.get("start") else None
 
 
+STALE_AFTER_DAYS = 550
+
+
 def _facts_for(facts: dict[str, Any], candidates: list[tuple[str, str]]) -> tuple[str, str, list[dict[str, Any]]] | None:
-    for taxonomy, concept in candidates:
+    """The candidate concept with the most recent data; priority order breaks ties.
+
+    Companies switch concepts over time (Apple reported `Revenues` until 2018),
+    so the first candidate that has any data can be years out of date.
+    """
+    best: tuple[str, int, tuple[str, str, list[dict[str, Any]]]] | None = None
+    for priority, (taxonomy, concept) in enumerate(candidates):
         units = facts.get(taxonomy, {}).get(concept, {}).get("units") or {}
         if not units:
             continue
         unit = next((u for u in units if re.fullmatch(r"[A-Z]{3}(/shares)?|shares", u)), next(iter(units)))
         rows = [f for f in units[unit] if f.get("end") and f.get("val") is not None]
-        if rows:
-            return f"{taxonomy}:{concept}", unit, rows
-    return None
+        if not rows:
+            continue
+        latest = max(f["end"] for f in rows)
+        if best is None or latest > best[0]:
+            best = (latest, priority, (f"{taxonomy}:{concept}", unit, rows))
+    return best[2] if best else None
+
+
+def _is_stale(end: str | None, today: dt.date | None = None) -> bool:
+    return end is None or ((today or dt.date.today()) - _date(end)).days > STALE_AFTER_DAYS
 
 
 def _latest_per_end(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -152,7 +196,7 @@ def _near(a: str, b: dt.date, tolerance: int = 10) -> bool:
     return abs((_date(a) - b).days) <= tolerance
 
 
-def flow_metric(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def flow_metric(rows: list[dict[str, Any]], today: dt.date | None = None) -> dict[str, Any]:
     rows = _latest_per_end(rows)
     annual = [f for f in rows if f.get("form") in ANNUAL_FORMS and (d := _days(f)) and 350 <= d <= 380]
     quarters = [f for f in rows if (d := _days(f)) and 80 <= d <= 100]
@@ -193,6 +237,8 @@ def flow_metric(rows: list[dict[str, Any]]) -> dict[str, Any]:
     # Q1s; a quarter older than the newest reported period would be stale.
     newest_end = max(f["end"] for f in rows) if rows else None
     latest_quarter = quarters[-1] if quarters and quarters[-1]["end"] == newest_end else None
+    if ttm is not None:
+        ttm["stale"] = _is_stale(ttm["end"], today)
     return {
         "ttm": ttm,
         "latest_annual": _fact(latest_annual),
@@ -204,9 +250,12 @@ def flow_metric(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def stock_metric(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def stock_metric(rows: list[dict[str, Any]], today: dt.date | None = None) -> dict[str, Any]:
     rows = _latest_per_end(rows)
-    return {"latest": _fact(rows[-1]) if rows else None}
+    latest = _fact(rows[-1]) if rows else None
+    if latest is not None:
+        latest["stale"] = _is_stale(latest["end"], today)
+    return {"latest": latest}
 
 
 def _ratio(a: float | None, b: float | None, pct: bool = True) -> float | None:
@@ -215,7 +264,8 @@ def _ratio(a: float | None, b: float | None, pct: bool = True) -> float | None:
     return round(a / b * (100 if pct else 1), 2)
 
 
-def fundamentals(facts_doc: dict[str, Any]) -> dict[str, Any]:
+def fundamentals(facts_doc: dict[str, Any], today: dt.date | None = None) -> dict[str, Any]:
+    """`today` anchors the staleness check (tests pin it)."""
     facts = facts_doc.get("facts") or {}
     metrics: dict[str, Any] = {}
     currency = None
@@ -223,22 +273,26 @@ def fundamentals(facts_doc: dict[str, Any]) -> dict[str, Any]:
         found = _facts_for(facts, candidates)
         if found:
             concept, unit, rows = found
-            metrics[name] = {"concept": concept, "unit": unit, **flow_metric(rows)}
+            metrics[name] = {"concept": concept, "unit": unit, **flow_metric(rows, today)}
             if name == "revenue":
                 currency = unit
     for name, candidates in STOCK_CONCEPTS.items():
         found = _facts_for(facts, candidates)
         if found:
             concept, unit, rows = found
-            metrics[name] = {"concept": concept, "unit": unit, **stock_metric(rows)}
+            metrics[name] = {"concept": concept, "unit": unit, **stock_metric(rows, today)}
     if not metrics:
         raise Unavailable("No usable XBRL facts")
 
+    def fresh(name: str, period: str) -> float | None:
+        fact = (metrics.get(name) or {}).get(period) or {}
+        return None if fact.get("stale", True) else fact.get("val")
+
     def ttm(name: str) -> float | None:
-        return ((metrics.get(name) or {}).get("ttm") or {}).get("val")
+        return fresh(name, "ttm")
 
     def latest(name: str) -> float | None:
-        return ((metrics.get(name) or {}).get("latest") or {}).get("val")
+        return fresh(name, "latest")
 
     ocf, capex = ttm("operating_cash_flow"), ttm("capex")
     fcf = ocf - capex if ocf is not None and capex is not None else None
@@ -250,6 +304,7 @@ def fundamentals(facts_doc: dict[str, Any]) -> dict[str, Any]:
         "fcf_margin_pct": _ratio(fcf, ttm("revenue")),
         "return_on_equity_pct": _ratio(ttm("net_income"), latest("equity")),
         "debt_to_equity": _ratio(latest("long_term_debt"), latest("equity"), pct=False),
+        "dividends_per_share_ttm": ttm("dividends_per_share"),
     }
     return {
         "entity_name": facts_doc.get("entityName"),
@@ -260,6 +315,7 @@ def fundamentals(facts_doc: dict[str, Any]) -> dict[str, Any]:
         "notes": [
             "TTM = latest annual + current YTD - prior-year YTD (EPS TTM is an additive approximation).",
             "Values are as reported in XBRL; restatements replace earlier filings for the same period.",
+            f"Facts older than {STALE_AFTER_DAYS} days are flagged stale and left out of ratios and valuation.",
         ],
     }
 
@@ -267,10 +323,16 @@ def fundamentals(facts_doc: dict[str, Any]) -> dict[str, Any]:
 def valuation(fund: dict[str, Any], price_in_reporting_ccy: float | None) -> dict[str, Any]:
     """Market-price-based multiples; price must already be in the reporting currency."""
     m = fund["metrics"]
-    shares = ((m.get("shares_outstanding") or {}).get("latest") or {}).get("val")
-    eps = ((m.get("eps_diluted") or {}).get("ttm") or {}).get("val")
-    revenue = ((m.get("revenue") or {}).get("ttm") or {}).get("val")
+
+    def fresh(name: str, period: str) -> float | None:
+        fact = (m.get(name) or {}).get(period) or {}
+        return None if fact.get("stale", True) else fact.get("val")
+
+    shares = fresh("shares_outstanding", "latest")
+    eps = fresh("eps_diluted", "ttm")
+    revenue = fresh("revenue", "ttm")
     fcf = fund["ratios"].get("free_cash_flow_ttm")
+    dps = fund["ratios"].get("dividends_per_share_ttm")
     if price_in_reporting_ccy is None:
         return {"available": False, "reason": "no price in reporting currency"}
     mcap = price_in_reporting_ccy * shares if shares else None
@@ -281,6 +343,7 @@ def valuation(fund: dict[str, Any], price_in_reporting_ccy: float | None) -> dic
         "pe_ttm": _ratio(price_in_reporting_ccy, eps, pct=False) if eps and eps > 0 else None,
         "ps_ttm": _ratio(mcap, revenue, pct=False),
         "fcf_yield_pct": _ratio(fcf, mcap),
+        "dividend_yield_pct": _ratio(dps, price_in_reporting_ccy),
     }
 
 
