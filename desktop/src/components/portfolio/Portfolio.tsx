@@ -55,12 +55,23 @@ export default function Portfolio() {
 
   // Groups are fetched separately (only needed for the bulk-assign picker) so
   // a failure there never blocks the holdings table from rendering.
-  useEffect(() => {
+  const loadGroups = useCallback(() => {
     api
       .getPortfolioGroups(activePortfolioId || undefined)
       .then((data) => setGroups(data.result.portfolio_groups ?? []))
       .catch(() => setGroups([]));
-  }, [activePortfolioId, refreshToken]);
+  }, [activePortfolioId]);
+
+  useEffect(() => {
+    loadGroups();
+  }, [loadGroups, refreshToken]);
+
+  // The CLI rejects the whole assign if any ISIN is already in the target
+  // group, so only send the ones that would actually move.
+  const isinsToAssign = (groupId: string) => {
+    const members = new Set(groups.find((g) => g.group_id === groupId)?.items.map((i) => i.isin));
+    return Array.from(selected).filter((isin) => !members.has(isin));
+  };
 
   const cliCommand = renderCliCommand("get_holdings", {
     portfolioId: activePortfolioId || undefined,
@@ -120,13 +131,17 @@ export default function Portfolio() {
 
   const handleBulkAssign = async () => {
     if (!assignGroupId || selected.size === 0) return;
+    const isins = isinsToAssign(assignGroupId);
     setAssigning(true);
     try {
-      await api.assignToGroup({
-        groupId: assignGroupId,
-        isin: Array.from(selected),
-        portfolioId: activePortfolioId || undefined,
-      });
+      if (isins.length > 0) {
+        await api.assignToGroup({
+          groupId: assignGroupId,
+          isin: isins,
+          portfolioId: activePortfolioId || undefined,
+        });
+        loadGroups();
+      }
       push({ tone: "success", title: t.groups.assigned });
       setSelected(new Set());
       setAssignOpen(false);
@@ -264,7 +279,7 @@ export default function Portfolio() {
         open={assignOpen}
         onClose={() => setAssignOpen(false)}
         selectedCount={selected.size}
-        isins={Array.from(selected)}
+        isins={assignGroupId ? isinsToAssign(assignGroupId) : Array.from(selected)}
         portfolioId={activePortfolioId || undefined}
         groups={groups}
         groupId={assignGroupId}
