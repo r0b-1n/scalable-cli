@@ -26,7 +26,7 @@ interface DataTableProps<T> {
   onRowClick?: (row: T) => void;
   loading?: boolean;
   empty?: ReactNode;
-  /** Enables the CSV export button; used as the download file name. */
+  /** Enables the CSV and JSON export buttons; used as the download file name. */
   exportName?: string;
   initialSort?: { key: string; direction: "asc" | "desc" };
   className?: string;
@@ -59,7 +59,9 @@ function toCsv<T>(columns: Column<T>[], rows: T[]): string {
 }
 
 /**
- * Sortable table with optional CSV export.
+ * Sortable table with optional CSV and JSON export. CSV holds the exportable
+ * columns; JSON holds the rows themselves — for CLI-backed tables that is
+ * every field `sc … --json` returned, not just the visible columns.
  *
  * Export writes a Blob through an object URL rather than a `data:` URI: the
  * app's CSP allows neither remote fetches nor inline data documents, and blob
@@ -98,12 +100,12 @@ export default function DataTable<T>({
     );
   };
 
-  const download = () => {
-    const blob = new Blob([toCsv(columns, sorted)], { type: "text/csv;charset=utf-8" });
+  const download = (content: string, extension: string, type: string) => {
+    const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${exportName}.csv`;
+    link.download = `${exportName}.${extension}`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -114,13 +116,24 @@ export default function DataTable<T>({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0 flex-1">{toolbar}</div>
           {exportName && rows.length > 0 && (
-            <button
-              onClick={download}
-              className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-2xs text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-            >
-              <Download size={13} />
-              CSV
-            </button>
+            <div className="flex shrink-0 items-center">
+              {[
+                { label: "CSV", run: () => download(toCsv(columns, sorted), "csv", "text/csv;charset=utf-8") },
+                {
+                  label: "JSON",
+                  run: () => download(JSON.stringify(sorted, null, 2), "json", "application/json"),
+                },
+              ].map((b) => (
+                <button
+                  key={b.label}
+                  onClick={b.run}
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-2xs text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+                >
+                  <Download size={13} />
+                  {b.label}
+                </button>
+              ))}
+            </div>
           )}
         </div>
       )}
