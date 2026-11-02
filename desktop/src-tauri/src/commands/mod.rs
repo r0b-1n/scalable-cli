@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod config;
 pub mod broker;
 pub mod context;
 pub mod transactions;

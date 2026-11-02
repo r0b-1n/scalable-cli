@@ -42,7 +42,7 @@ the result. Anything the app can do, you can do in a terminal — and the app sh
 | Income report | `/reports/income` | `broker transactions`, `overnight transactions` |
 | Cost report | `/reports/costs` | `broker transactions`, `broker transaction details` |
 | Security | `/security/:isin` | `broker quote`, `chart`, `security-news`, `transactions`, `holdings` |
-| Settings | `/settings` | `broker context show/select`, `broker portfolios`, `capabilities`, `whoami` |
+| Settings | `/settings` | `broker context show/select`, `broker portfolios`, `capabilities`, `whoami`; edits `[trade_controls]` in config.toml |
 | CLI console | `/cli` | `capabilities` + the session command log |
 
 Composite views — rebalancing, the income and cost reports, group-level P&L, the savings-plan

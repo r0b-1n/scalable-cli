@@ -88,6 +88,17 @@ export const api = {
   logout: () => invokeSc<void>("logout"),
   getWhoami: () => invokeSc<WhoamiData>("get_whoami"),
   getCapabilities: () => invokeSc<CapabilitiesData>("get_capabilities"),
+  /**
+   * Rewrites `[trade_controls]` in the CLI's config.toml and returns the
+   * capabilities the CLI reports afterwards. Not an `sc` command — there is
+   * no CLI equivalent to show — so it bypasses the CLI log on purpose.
+   * `allowedIsins: []` means "nothing is tradable"; `undefined` removes a control.
+   */
+  setTradeControls: (params: {
+    allowedIsins?: string[];
+    deniedIsins?: string[];
+    maxOrderNotional?: string;
+  }) => invoke<CapabilitiesData>("set_trade_controls", params),
 
   // ---------------------------------------------------------------- context
   getBrokerContext: () => invokeSc<BrokerContextData>("get_broker_context"),

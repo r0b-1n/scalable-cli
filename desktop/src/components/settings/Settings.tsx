@@ -20,6 +20,7 @@ import SegmentedControl from "../ui/SegmentedControl";
 import Spinner from "../ui/Spinner";
 import { SkeletonLines } from "../ui/Skeleton";
 import CliCommand from "../ui/CliCommand";
+import TradeControlsModal from "./TradeControlsModal";
 import type { BrokerContextData, BrokerPortfolioListData, CapabilitiesData } from "../../api/types";
 
 /**
@@ -86,6 +87,7 @@ export default function Settings() {
   const [switching, setSwitching] = useState(false);
 
   const [capabilities, setCapabilities] = useState<CapabilitiesData | null>(null);
+  const [tradeControlsOpen, setTradeControlsOpen] = useState(false);
   const [capLoading, setCapLoading] = useState(true);
   const [capError, setCapError] = useState<string | null>(null);
 
@@ -311,9 +313,14 @@ export default function Settings() {
             {trade && (
               <>
                 <SettingsRow label={t.settings.localTradeControls}>
-                  <Badge variant={trade.enabled ? "positive" : "default"}>
-                    {trade.enabled ? t.settings.enabled : t.settings.disabled}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={trade.enabled ? "positive" : "default"}>
+                      {trade.enabled ? t.settings.enabled : t.settings.disabled}
+                    </Badge>
+                    <Button variant="secondary" size="sm" onClick={() => setTradeControlsOpen(true)}>
+                      {t.settings.tradeControlsEdit}
+                    </Button>
+                  </div>
                 </SettingsRow>
                 {trade.max_order_notional_active && trade.max_order_notional && (
                   <SettingsRow label={t.settings.maxOrderNotional}>
@@ -343,6 +350,17 @@ export default function Settings() {
           <p className="text-sm text-text-secondary">{t.settings.capabilitiesError}</p>
         )}
       </section>
+
+      <TradeControlsModal
+        open={tradeControlsOpen}
+        current={trade}
+        onClose={() => setTradeControlsOpen(false)}
+        onSaved={(caps) => {
+          setCapabilities(caps);
+          setTradeControlsOpen(false);
+          push({ tone: "success", title: t.settings.tradeControlsSaved });
+        }}
+      />
     </div>
   );
 }

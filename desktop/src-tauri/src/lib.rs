@@ -1,5 +1,6 @@
 mod commands;
 mod sc;
+mod trade_controls_toml;
 mod validate;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -10,6 +11,7 @@ pub fn run() {
             commands::auth::logout,
             commands::auth::get_whoami,
             commands::auth::get_capabilities,
+            commands::config::set_trade_controls,
             commands::context::get_broker_context,
             commands::context::list_broker_portfolios,
             commands::context::select_broker_context,
