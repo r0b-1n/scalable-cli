@@ -5,8 +5,6 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-#[cfg(windows)]
-use crate::config::open_unshared_lock_file;
 use crate::config::{
     AppConfig, SessionBackendPreference, TargetEnv, config_dir_path, config_file_display_path,
     ensure_private_dir, write_private_file_atomic,
@@ -31,6 +29,7 @@ const KEYRING_MAX_CHUNK_UTF16_UNITS: usize = 8192;
 #[cfg(windows)]
 const _: () = assert!(KEYRING_MAX_CHUNK_UTF16_UNITS * 2 <= 2560);
 const ACTIVE_SESSION_LOCK_FILENAME: &str = "session.lock";
+const SESSION_REFRESH_LOCK_FILENAME: &str = "session-refresh.lock";
 
 pub const SECRET_STORAGE_UNAVAILABLE_PREFIX: &str =
     "OS secret storage (keyring/Credential Manager/Secret Service) is unavailable.";
@@ -107,6 +106,15 @@ pub struct StoredSession {
     pub dpop_jwk_thumbprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<SessionMode>,
+    /// A rotated refresh token was saved but its replacement access token was
+    /// not yet verified. This record must be refreshed before its access
+    /// token can be used.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub refresh_recovery_pending: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 pub trait SecretStore {
@@ -455,42 +463,6 @@ impl SessionManager<StorageBackend> {
         self.store.set_with_backend(SESSION_ACCOUNT, &serialized)
     }
 
-    pub fn save_active_locked(&mut self, stored_session: &StoredSession) -> Result<()> {
-        let _lock = ActiveSessionLock::acquire()?;
-        self.save_active_unlocked(stored_session)
-    }
-
-    pub fn save_active_if_matches(
-        &mut self,
-        expected: &StoredSession,
-        replacement: &StoredSession,
-    ) -> Result<bool> {
-        let _lock = ActiveSessionLock::acquire()?;
-        match self.load_active_unlocked()? {
-            Some(current) if current == *expected => {
-                self.save_active_unlocked(replacement)?;
-                Ok(true)
-            }
-            Some(_) | None => Ok(false),
-        }
-    }
-
-    pub fn delete_active_if_matches(&mut self, expected: &StoredSession) -> Result<bool> {
-        let _lock = ActiveSessionLock::acquire()?;
-        match self.load_active_unlocked()? {
-            Some(current) if current == *expected => {
-                self.store.delete(SESSION_ACCOUNT)?;
-                Ok(true)
-            }
-            Some(_) | None => Ok(false),
-        }
-    }
-
-    pub fn delete_active_locked(&mut self) -> Result<()> {
-        let _lock = ActiveSessionLock::acquire()?;
-        self.store.delete(SESSION_ACCOUNT)
-    }
-
     pub fn storage_backend_diagnostics(&self) -> StorageBackendDiagnostics {
         self.store.diagnostics()
     }
@@ -524,12 +496,48 @@ impl<S: SecretStore> SessionManager<S> {
         self.save_active_unlocked(stored_session)
     }
 
+    pub fn save_active_locked(&mut self, stored_session: &StoredSession) -> Result<()> {
+        let _lock = ActiveSessionLock::acquire()?;
+        self.save_active_unlocked(stored_session)
+    }
+
+    pub fn save_active_if_matches(
+        &mut self,
+        expected: &StoredSession,
+        replacement: &StoredSession,
+    ) -> Result<bool> {
+        let _lock = ActiveSessionLock::acquire()?;
+        match self.load_active_unlocked()? {
+            Some(current) if current == *expected => {
+                self.save_active_unlocked(replacement)?;
+                Ok(true)
+            }
+            Some(_) | None => Ok(false),
+        }
+    }
+
     fn save_active_unlocked(&mut self, stored_session: &StoredSession) -> Result<()> {
         let serialized = serde_json::to_string(stored_session)?;
         self.store.set(SESSION_ACCOUNT, &serialized)
     }
 
     pub fn delete_active(&mut self) -> Result<()> {
+        self.store.delete(SESSION_ACCOUNT)
+    }
+
+    pub fn delete_active_if_matches(&mut self, expected: &StoredSession) -> Result<bool> {
+        let _lock = ActiveSessionLock::acquire()?;
+        match self.load_active_unlocked()? {
+            Some(current) if current == *expected => {
+                self.store.delete(SESSION_ACCOUNT)?;
+                Ok(true)
+            }
+            Some(_) | None => Ok(false),
+        }
+    }
+
+    pub fn delete_active_locked(&mut self) -> Result<()> {
+        let _lock = ActiveSessionLock::acquire()?;
         self.store.delete(SESSION_ACCOUNT)
     }
 
@@ -565,35 +573,37 @@ struct ActiveSessionLock {
 
 impl ActiveSessionLock {
     fn acquire() -> Result<Self> {
-        let path = config_dir_path()?.join(ACTIVE_SESSION_LOCK_FILENAME);
-
-        #[cfg(windows)]
-        {
-            let file = open_unshared_lock_file(&path, true)
-                .with_context(|| format!("Failed opening session lock {}", path.display()))?
-                .ok_or_else(|| {
-                    anyhow!(
-                        "Failed acquiring session lock {}: locked by another sc process",
-                        path.display()
-                    )
-                })?;
-            Ok(Self { file })
-        }
-
-        #[cfg(not(windows))]
-        {
-            let file = fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&path)
-                .with_context(|| format!("Failed opening session lock {}", path.display()))?;
-            lock_file_exclusive(&file)
-                .with_context(|| format!("Failed locking session state {}", path.display()))?;
-            Ok(Self { file })
-        }
+        Ok(Self {
+            file: acquire_session_lock(ACTIVE_SESSION_LOCK_FILENAME, "session state")?,
+        })
     }
+}
+
+pub(crate) struct SessionRefreshLock {
+    #[allow(dead_code)]
+    file: fs::File,
+}
+
+impl SessionRefreshLock {
+    pub(crate) fn acquire() -> Result<Self> {
+        Ok(Self {
+            file: acquire_session_lock(SESSION_REFRESH_LOCK_FILENAME, "session refresh")?,
+        })
+    }
+}
+
+fn acquire_session_lock(filename: &str, label: &str) -> Result<fs::File> {
+    let path = config_dir_path()?.join(filename);
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("Failed opening {label} lock {}", path.display()))?;
+    lock_file_exclusive(&file)
+        .with_context(|| format!("Failed locking {label} {}", path.display()))?;
+    Ok(file)
 }
 
 #[cfg(unix)]
@@ -613,6 +623,11 @@ fn lock_file_exclusive(file: &fs::File) -> Result<()> {
 
         return Err(err).context("flock LOCK_EX failed");
     }
+}
+
+#[cfg(windows)]
+fn lock_file_exclusive(file: &fs::File) -> Result<()> {
+    file.lock().context("LockFileEx failed")
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -711,6 +726,7 @@ mod tests {
             session: sample_session(),
             dpop_jwk_thumbprint: Some("thumbprint-1".to_string()),
             mode: None,
+            refresh_recovery_pending: false,
         }
     }
 
@@ -759,6 +775,7 @@ mod tests {
         assert_eq!(loaded.session.access_token, "access");
         assert_eq!(loaded.dpop_jwk_thumbprint.as_deref(), Some("thumbprint-1"));
         assert_eq!(loaded.mode, None);
+        assert!(!loaded.refresh_recovery_pending);
     }
 
     #[test]
@@ -1179,6 +1196,7 @@ mod tests {
         assert_eq!(loaded.env, TargetEnv::Prod);
         assert_eq!(loaded.dpop_jwk_thumbprint, None);
         assert_eq!(loaded.mode, None);
+        assert!(!loaded.refresh_recovery_pending);
     }
 
     #[test]
@@ -1199,6 +1217,23 @@ mod tests {
             .expect("session exists");
 
         assert_eq!(loaded.mode, None);
+        assert!(!loaded.refresh_recovery_pending);
+    }
+
+    #[test]
+    fn serializes_recovery_marker_only_when_pending() {
+        let normal = serde_json::to_value(sample_stored_session()).expect("serialize normal");
+        assert!(normal.get("refresh_recovery_pending").is_none());
+
+        let recovery = StoredSession {
+            refresh_recovery_pending: true,
+            ..sample_stored_session()
+        };
+        let serialized = serde_json::to_value(recovery).expect("serialize recovery");
+        assert_eq!(
+            serialized.get("refresh_recovery_pending"),
+            Some(&serde_json::Value::Bool(true))
+        );
     }
 
     #[test]

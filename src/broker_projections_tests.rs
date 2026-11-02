@@ -1,14 +1,203 @@
 use super::*;
 use crate::broker_queries::BrokerInput;
+use crate::machine::classify_error;
 use serde_json::json;
 
-fn broker_input(include_year_to_date: bool, quote_source: Option<&str>) -> BrokerInput {
-    BrokerInput::new("acc-1", "port-1", include_year_to_date, quote_source).expect("input")
+fn broker_input(include_year_to_date: bool) -> BrokerInput {
+    BrokerInput::new("acc-1", "port-1", include_year_to_date).expect("input")
+}
+
+fn portfolio_chart_fixture() -> Value {
+    json!({"account": {"id": "acc-1", "brokerPortfolio": {
+        "id": "port-1", "timeseries": [{
+            "timeframe": "ONE_YEAR",
+            "closingReferencePoint": {"valuation": "10000.000", "absoluteReturn": 0,
+                "timestampUtc": {"time": "2025-10-08T22:00:00+02:00"}},
+            "dataPoints": [
+                {"valuation": "9990.123456789", "absoluteReturn": "-9.876543211",
+                    "timestampUtc": {"time": "2026-10-09T12:00:00.100001+02:00"}},
+                {"valuation": 0, "absoluteReturn": 0,
+                    "timestampUtc": {"time": "2026-10-08T10:00:00Z"}}
+            ]
+        }, {"timeframe": "MAX", "closingReferencePoint": {
+            "valuation": 42, "absoluteReturn": -2,
+            "timestampUtc": {"time": "2026-10-08T10:00:00Z"}
+        }, "dataPoints": []}]
+    }}})
+}
+
+#[test]
+fn portfolio_chart_projection_preserves_metrics_order_and_reference() {
+    let projected = project_broker_portfolio_chart_response(
+        &broker_input(true),
+        BrokerChartTimeframe::OneYear,
+        &portfolio_chart_fixture(),
+    )
+    .expect("project");
+    assert_eq!(
+        projected,
+        json!({
+            "target": "portfolio", "timeframe": "1y", "point_count": 2,
+            "closing_reference_point": {"valuation": "10000.000", "absolute_return": 0, "timestamp_utc": "2025-10-08T20:00:00Z"},
+            "data_points": [
+                {"valuation": "9990.123456789", "absolute_return": "-9.876543211", "timestamp_utc": "2026-10-09T10:00:00.100001Z"},
+                {"valuation": 0, "absolute_return": 0, "timestamp_utc": "2026-10-08T10:00:00Z"}
+            ]
+        })
+    );
+}
+
+#[test]
+fn portfolio_chart_projection_accepts_reference_only_max() {
+    let projected = project_broker_portfolio_chart_response(
+        &broker_input(true),
+        BrokerChartTimeframe::Max,
+        &portfolio_chart_fixture(),
+    )
+    .expect("reference-only history");
+    assert_eq!(projected["point_count"], 0);
+    assert_eq!(projected["data_points"], json!([]));
+    assert_eq!(projected["closing_reference_point"]["valuation"], 42);
+    assert_eq!(projected["closing_reference_point"]["absolute_return"], -2);
+}
+
+#[test]
+fn portfolio_chart_projection_selects_all_existing_aliases() {
+    for timeframe in [
+        BrokerChartTimeframe::OneDay,
+        BrokerChartTimeframe::SevenDays,
+        BrokerChartTimeframe::OneMonth,
+        BrokerChartTimeframe::ThreeMonths,
+        BrokerChartTimeframe::SixMonths,
+        BrokerChartTimeframe::YearToDate,
+        BrokerChartTimeframe::OneYear,
+        BrokerChartTimeframe::Max,
+    ] {
+        let mut response = portfolio_chart_fixture();
+        response["account"]["brokerPortfolio"]["timeseries"] = json!([{
+            "timeframe": timeframe.as_graphql(), "dataPoints": [],
+            "closingReferencePoint": {"valuation": "0.00", "absoluteReturn": "0.00", "timestampUtc": {"time": "2026-10-09T10:00:00Z"}}
+        }]);
+        let projected =
+            project_broker_portfolio_chart_response(&broker_input(true), timeframe, &response)
+                .expect("alias");
+        assert_eq!(projected["timeframe"], timeframe.as_cli_value());
+    }
+}
+
+#[test]
+fn portfolio_chart_projection_rejects_malformed_required_fields_as_response_errors() {
+    let invalid_fields = [
+        ("/account", Value::Null),
+        ("/account/id", json!("other-account")),
+        ("/account/brokerPortfolio/id", json!("other-portfolio")),
+        ("/account/brokerPortfolio/timeseries", Value::Null),
+        (
+            "/account/brokerPortfolio/timeseries/0/dataPoints",
+            Value::Null,
+        ),
+        (
+            "/account/brokerPortfolio/timeseries/0/dataPoints/0",
+            json!(false),
+        ),
+        (
+            "/account/brokerPortfolio/timeseries/0/dataPoints/0/valuation",
+            Value::Null,
+        ),
+        (
+            "/account/brokerPortfolio/timeseries/0/dataPoints/0/valuation",
+            json!("not-a-decimal"),
+        ),
+        (
+            "/account/brokerPortfolio/timeseries/0/dataPoints/0/absoluteReturn",
+            json!(true),
+        ),
+        (
+            "/account/brokerPortfolio/timeseries/0/dataPoints/0/absoluteReturn",
+            json!("NaN"),
+        ),
+        (
+            "/account/brokerPortfolio/timeseries/0/dataPoints/0/absoluteReturn",
+            json!({}),
+        ),
+        (
+            "/account/brokerPortfolio/timeseries/0/dataPoints/0/timestampUtc",
+            json!({"time":"not-a-time"}),
+        ),
+        (
+            "/account/brokerPortfolio/timeseries/0/closingReferencePoint",
+            Value::Null,
+        ),
+        (
+            "/account/brokerPortfolio/timeseries/0/closingReferencePoint/valuation",
+            json!([]),
+        ),
+        (
+            "/account/brokerPortfolio/timeseries/0/closingReferencePoint/absoluteReturn",
+            json!("Infinity"),
+        ),
+        (
+            "/account/brokerPortfolio/timeseries/0/closingReferencePoint/timestampUtc",
+            Value::Null,
+        ),
+    ];
+    for (pointer, value) in invalid_fields {
+        let mut response = portfolio_chart_fixture();
+        *response.pointer_mut(pointer).expect("fixture path") = value;
+        let err = project_broker_portfolio_chart_response(
+            &broker_input(true),
+            BrokerChartTimeframe::OneYear,
+            &response,
+        )
+        .expect_err(pointer);
+        let classified = crate::machine::classify_error(&err);
+        assert_eq!(
+            classified.code, "broker_response_invalid",
+            "{pointer}: {err:#}"
+        );
+        assert_eq!(classified.exit_code, 30);
+    }
+    let mut missing = portfolio_chart_fixture();
+    missing["account"]["brokerPortfolio"]["timeseries"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("dataPoints");
+    assert!(
+        project_broker_portfolio_chart_response(
+            &broker_input(true),
+            BrokerChartTimeframe::OneYear,
+            &missing
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn portfolio_chart_projection_requires_exactly_one_requested_series() {
+    let mut response = portfolio_chart_fixture();
+    let series = &mut response["account"]["brokerPortfolio"]["timeseries"];
+    let duplicate = series[0].clone();
+    series.as_array_mut().unwrap().push(duplicate);
+    assert!(
+        project_broker_portfolio_chart_response(
+            &broker_input(true),
+            BrokerChartTimeframe::OneYear,
+            &response
+        )
+        .is_err()
+    );
+    let err = project_broker_portfolio_chart_response(
+        &broker_input(true),
+        BrokerChartTimeframe::YearToDate,
+        &response,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("ytd"));
 }
 
 #[test]
 fn project_broker_overview_exposes_only_supported_return_fields() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -38,257 +227,8 @@ fn project_broker_overview_exposes_only_supported_return_fields() {
 }
 
 #[test]
-fn project_broker_analytics_maps_result_sections() {
-    let input = broker_input(false, None);
-    let response = json!({
-        "account": {
-            "brokerPortfolio": {
-                "portfolioAnalysis": {
-                    "type": "SUCCESS",
-                    "result": {
-                        "id": "analysis-1",
-                        "lastUpdated": {"time":"2026-03-11T10:00:00Z"},
-                        "healthChecks": {
-                            "id": "checks-1",
-                            "items": [
-                                {
-                                    "id": "hc-1",
-                                    "type": "REGION",
-                                    "healthScore": "0.80",
-                                    "state": "HIGH",
-                                    "color": {"sixDigitNotationValue":"#123456"},
-                                    "numberOfItemsInPortfolio": "5",
-                                    "maxItems": "10"
-                                }
-                            ]
-                        },
-                        "scenarios": {
-                            "id": "scenarios-1",
-                            "items": [
-                                {
-                                    "id": "scenario-1",
-                                    "type": "WORLD_DOWN",
-                                    "portfolioPerformance": "-11.5",
-                                    "benchmarkPerformance": "-9.0",
-                                    "securities": [
-                                        {"id":"sec-1","isin":"US0378331005","name":"Apple","type":"STOCK"}
-                                    ]
-                                }
-                            ]
-                        },
-                        "allocations": {
-                            "id": "allocations-1",
-                            "items": [
-                                {
-                                    "id": "allocation-1",
-                                    "type": "REGION",
-                                    "positions": [
-                                        {
-                                            "id": "position-1",
-                                            "name": "North America",
-                                            "weight": "0.60",
-                                            "valuation": "600",
-                                            "contributors": [
-                                                {
-                                                    "id": "contributor-1",
-                                                    "weight": "0.25",
-                                                    "underlyingAsset": {
-                                                        "isin": "US0378331005",
-                                                        "name": "Apple",
-                                                        "inventory": {
-                                                            "position": {
-                                                                "filled": "2"
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            ],
-                                            "subpositions": [
-                                                {
-                                                    "id": "subposition-1",
-                                                    "name": "USA",
-                                                    "weight": "0.50",
-                                                    "valuation": "500",
-                                                    "contributors": [
-                                                        {
-                                                            "id": "contributor-2",
-                                                            "weight": "0.10",
-                                                            "underlyingAsset": {
-                                                                "ticker": "BTC",
-                                                                "name": "Bitcoin"
-                                                            }
-                                                        }
-                                                    ]
-                                                }
-                                            ]
-                                        }
-                                    ]
-                                }
-                            ]
-                        },
-                        "equityCompanyStyles": {
-                            "id": "styles-1",
-                            "marketCaps": [
-                                {
-                                    "id": "cap-1",
-                                    "type": "LARGE",
-                                    "weight": "0.70",
-                                    "items": [
-                                        {
-                                            "id": "style-item-1",
-                                            "type": "VALUE",
-                                            "weight": "0.30",
-                                            "contributors": [
-                                                {
-                                                    "id": "contributor-3",
-                                                    "weight": "0.15",
-                                                    "underlyingAsset": {
-                                                        "isin": "US5949181045",
-                                                        "name": "Microsoft"
-                                                    }
-                                                }
-                                            ]
-                                        }
-                                    ],
-                                    "contributors": [
-                                        {
-                                            "id": "contributor-4",
-                                            "weight": "0.20",
-                                            "underlyingAsset": {
-                                                "ticker": "ETH",
-                                                "name": "Ethereum"
-                                            }
-                                        }
-                                    ]
-                                }
-                            ]
-                        },
-                        "fixedIncomeRatings": {
-                            "id": "ratings-1",
-                            "investmentGrade": [
-                                {
-                                    "id": "grade-1",
-                                    "name": "AAA",
-                                    "weight": "0.40",
-                                    "contributors": [
-                                        {
-                                            "id": "contributor-5",
-                                            "weight": "0.20",
-                                            "underlyingAsset": {
-                                                "isin": "DE0001102531",
-                                                "name": "Bund",
-                                                "inventory": {
-                                                    "position": {
-                                                        "filled": "4"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    ]
-                                }
-                            ],
-                            "speculativeGrade": [],
-                            "unratedGrade": [],
-                            "showSpeculativeInvestmentWarning": false
-                        },
-                        "payments": {
-                            "id": "payments-1",
-                            "totalDistributions": "12.34",
-                            "totalInterest": "1.23"
-                        },
-                        "trialPeriod": {
-                            "id": "trial-1",
-                            "isEligible": true,
-                            "isRunning": false,
-                            "startDate": {"time":"2026-03-01T00:00:00Z"},
-                            "durationInHours": 336
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    let projected = project_broker_analytics_response(&input, &response).expect("project");
-    assert_eq!(projected["analysis_type"], "SUCCESS");
-    assert_eq!(projected["last_updated_utc"], "2026-03-11T10:00:00Z");
-    assert_eq!(projected["health_checks"][0]["color_hex"], "#123456");
-    assert_eq!(
-        projected["scenarios"][0]["securities"][0]["security_type"],
-        "STOCK"
-    );
-    assert_eq!(
-        projected["allocations"][0]["positions"][0]["contributors"][0]["underlying_asset"]["filled_quantity"],
-        "2"
-    );
-    assert_eq!(
-        projected["allocations"][0]["positions"][0]["subpositions"][0]["contributors"][0]["underlying_asset"]
-            ["kind"],
-        "crypto"
-    );
-    assert_eq!(
-        projected["equity_company_styles"]["market_caps"][0]["items"][0]["contributors"][0]["underlying_asset"]
-            ["kind"],
-        "security"
-    );
-    assert_eq!(
-        projected["fixed_income_ratings"]["investment_grade"][0]["contributors"][0]["underlying_asset"]
-            ["isin"],
-        "DE0001102531"
-    );
-    assert_eq!(projected["payments"]["total_distributions"], "12.34");
-    assert_eq!(
-        projected["trial_period"]["start_time_utc"],
-        "2026-03-01T00:00:00Z"
-    );
-}
-
-#[test]
-fn project_broker_analytics_maps_invalid_securities() {
-    let input = broker_input(false, None);
-    let response = json!({
-        "account": {
-            "brokerPortfolio": {
-                "portfolioAnalysis": {
-                    "type": "INVALID_SECURITIES",
-                    "invalidSecurities": [
-                        {"id":"sec-1","isin":"US0000000001","name":"Invalid One","type":"STOCK"}
-                    ],
-                    "portfolioCoverage": "0.87",
-                    "result": {
-                        "id": "analysis-2",
-                        "lastUpdated": {"time":"2026-03-11T11:00:00Z"},
-                        "healthChecks": {"id":"checks-2","items":[]},
-                        "scenarios": {"id":"scenarios-2","items":[]},
-                        "allocations": {"id":"allocations-2","items":[]},
-                        "equityCompanyStyles": {"id":"styles-2","marketCaps":[]},
-                        "fixedIncomeRatings": {
-                            "id":"ratings-2",
-                            "investmentGrade":[],
-                            "speculativeGrade":[],
-                            "unratedGrade":[],
-                            "showSpeculativeInvestmentWarning": true
-                        },
-                        "payments": null,
-                        "trialPeriod": null
-                    }
-                }
-            }
-        }
-    });
-
-    let projected = project_broker_analytics_response(&input, &response).expect("project");
-    assert_eq!(projected["analysis_type"], "INVALID_SECURITIES");
-    assert_eq!(projected["portfolio_coverage"], "0.87");
-    assert_eq!(projected["invalid_securities_count"], 1);
-    assert_eq!(projected["invalid_securities"][0]["isin"], "US0000000001");
-    assert_eq!(projected["payments"], json!(null));
-    assert_eq!(projected["trial_period"], json!(null));
-}
-
-#[test]
 fn project_broker_holdings_sorts_items() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -304,12 +244,167 @@ fn project_broker_holdings_sorts_items() {
 
     let projected = project_broker_holdings_response(&input, &response).expect("project");
     assert_eq!(projected["count"], 2);
+    assert_eq!(projected["security_count"], 2);
+    assert_eq!(projected["crypto_count"], 0);
     assert_eq!(projected["items"][0]["isin"], "A");
+    assert_eq!(projected["items"][0]["kind"], "security");
+    assert_eq!(projected["crypto_items"], json!([]));
+}
+
+#[test]
+fn project_broker_holdings_maps_crypto_coin_and_all_etp_positions() {
+    let input = broker_input(false);
+    let response = json!({
+        "account": {
+            "brokerPortfolio": {
+                "inventory": {
+                    "items": [{
+                        "isin": "US0378331005",
+                        "name": "Apple",
+                        "type": "STOCK",
+                        "inventory": {"position": {"filled": 1, "pending": 0, "blocked": 0}},
+                        "portfolioIsinPerformance": {"valuation": 200, "currency": "EUR"},
+                        "quoteTick": {"midPrice": 200, "currency": "EUR"}
+                    }]
+                },
+                "crypto": {
+                    "coins": [{
+                        "ticker": "BTC",
+                        "name": "Bitcoin",
+                        "position": {"filled": 0.25, "sellable": 0.2, "pending": 0.05},
+                        "inventory": [
+                            {
+                                "isin": "DE000A3GPMN9",
+                                "etpSecurity": {
+                                    "name": "Bitcoin ETP B",
+                                    "inventory": null
+                                }
+                            },
+                            {
+                                "isin": "CH0454664001",
+                                "etpSecurity": {
+                                    "name": "Bitcoin ETP A",
+                                    "inventory": {
+                                        "position": {"blocked": 0.0, "filled": 1.5, "pending": 0.25}
+                                    }
+                                }
+                            }
+                        ]
+                    }]
+                }
+            }
+        }
+    });
+
+    let projected = project_broker_holdings_response(&input, &response).expect("project");
+    assert_eq!(projected["count"], 1);
+    assert_eq!(projected["items"][0]["isin"], "US0378331005");
+    assert_eq!(projected["crypto_count"], 1);
+    assert_eq!(projected["crypto_items"][0]["kind"], "crypto");
+    assert_eq!(projected["crypto_items"][0]["ticker"], "BTC");
+    assert_eq!(projected["crypto_items"][0]["name"], "Bitcoin");
+    assert_eq!(projected["crypto_items"][0]["position"]["filled"], 0.25);
+    assert_eq!(projected["crypto_items"][0]["position"]["sellable"], 0.2);
+    assert_eq!(projected["crypto_items"][0]["position"]["pending"], 0.05);
+    assert_eq!(
+        projected["crypto_items"][0]["etp_positions"][0]["isin"],
+        "CH0454664001"
+    );
+    assert_eq!(
+        projected["crypto_items"][0]["etp_positions"][0]["position"]["filled"],
+        1.5
+    );
+    assert_eq!(
+        projected["crypto_items"][0]["etp_positions"][1]["position"],
+        json!(null)
+    );
+}
+
+#[test]
+fn project_broker_order_venues_returns_supported_pairs_in_fixed_order() {
+    let response = json!({
+        "venues": {
+            "venues": [
+                {"mic": "SEIX", "emic": "MUC2"},
+                {"mic": "SCSI", "emic": "MUC1"},
+                {"mic": "MUNC", "emic": "MUNC"},
+                {"mic": "XETR", "emic": "XETR"}
+            ]
+        }
+    });
+
+    let projected = project_broker_order_venues_response(&response).expect("project");
+
+    assert_eq!(projected["count"], 3);
+    assert_eq!(
+        projected["venues"],
+        json!([
+            {"venue": "gettex", "label": "Gettex"},
+            {"venue": "xetra", "label": "Xetra"},
+            {"venue": "eix", "label": "EIX"}
+        ])
+    );
+}
+
+#[test]
+fn project_broker_order_venues_returns_empty_list_when_none_are_supported() {
+    let response = json!({
+        "venues": {
+            "venues": []
+        }
+    });
+
+    let projected = project_broker_order_venues_response(&response).expect("project");
+
+    assert_eq!(projected, json!({"count": 0, "venues": []}));
+}
+
+#[test]
+fn project_broker_order_venues_ignores_known_mic_with_unsupported_emic() {
+    let response = json!({
+        "venues": {
+            "venues": [{"mic": "SEIX", "emic": "SEIX"}]
+        }
+    });
+
+    let projected = project_broker_order_venues_response(&response).expect("project");
+
+    assert_eq!(projected, json!({"count": 0, "venues": []}));
+}
+
+#[test]
+fn project_broker_order_venues_rejects_malformed_or_duplicate_supported_data() {
+    let malformed = json!({
+        "venues": {
+            "venues": [{"mic": "munc", "emic": "MUNC"}]
+        }
+    });
+    let duplicate = json!({
+        "venues": {
+            "venues": [
+                {"mic": "MUNC", "emic": "MUNC"},
+                {"mic": "MUNC", "emic": "MUNC"}
+            ]
+        }
+    });
+
+    assert!(
+        project_broker_order_venues_response(&malformed)
+            .expect_err("malformed venue")
+            .to_string()
+            .contains("four-character uppercase code")
+    );
+    assert!(
+        project_broker_order_venues_response(&duplicate)
+            .expect_err("duplicate venue")
+            .to_string()
+            .contains("duplicate supported order venue")
+    );
 }
 
 #[test]
 fn project_broker_search_includes_query() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -327,7 +422,7 @@ fn project_broker_search_includes_query() {
 
 #[test]
 fn project_broker_derivatives_search_maps_price_and_expiry_shapes() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let query = crate::broker_queries::NormalizedBrokerDerivativesSearchQueryInput {
         derivative_type: crate::cli::BrokerDerivativeType::Knockout,
         underlying_isin: "US0378331005".to_string(),
@@ -448,7 +543,7 @@ fn project_broker_derivatives_search_maps_price_and_expiry_shapes() {
 
 #[test]
 fn project_broker_quote_response_maps_quote_fields() {
-    let input = broker_input(true, Some("CONSOLIDATED"));
+    let input = broker_input(true);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -506,7 +601,7 @@ fn project_broker_quote_response_maps_quote_fields() {
 
 #[test]
 fn project_broker_quote_response_requires_matching_returned_isin() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -527,7 +622,7 @@ fn project_broker_quote_response_requires_matching_returned_isin() {
 
 #[test]
 fn project_broker_quote_response_requires_security_node() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {}
@@ -653,7 +748,100 @@ fn project_broker_chart_response_requires_requested_timeframe() {
     )
     .unwrap_err();
 
-    assert!(err.to_string().contains("requested timeframe 'ytd'"));
+    assert_eq!(
+        err.to_string(),
+        "Chart data is unavailable for ISIN 'US0378331005' in the 'ytd' timeframe."
+    );
+    let classified = classify_error(&err);
+    assert_eq!(classified.code, "broker_chart_data_unavailable");
+    assert_eq!(classified.exit_code, 10);
+}
+
+#[test]
+fn project_broker_chart_response_reports_empty_series_as_unavailable() {
+    let err = project_broker_chart_response(
+        "US0378331005",
+        crate::cli::BrokerChartTimeframe::OneDay,
+        &json!({"timeSeriesBySecurity": []}),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "Chart data is unavailable for ISIN 'US0378331005' in the '1d' timeframe."
+    );
+    let classified = classify_error(&err);
+    assert_eq!(classified.code, "broker_chart_data_unavailable");
+    assert_eq!(classified.exit_code, 10);
+}
+
+#[test]
+fn project_broker_chart_response_rejects_malformed_nonmatching_series() {
+    let cases = [
+        json!([{}]),
+        json!([null]),
+        json!([42]),
+        json!([{"isin": "US0378331005"}]),
+        json!([{"isin": "US0378331005", "timeFrame": null}]),
+        json!([{"isin": "US0378331005", "timeFrame": 42}]),
+        json!([{"isin": "US0378331005", "timeFrame": " "}]),
+        json!([{"timeFrame": "YEAR_TO_DATE"}]),
+        json!([{"isin": null, "timeFrame": "YEAR_TO_DATE"}]),
+        json!([{"isin": 42, "timeFrame": "YEAR_TO_DATE"}]),
+        json!([{"isin": " ", "timeFrame": "YEAR_TO_DATE"}]),
+        json!([{"isin": "DE000BASF111", "timeFrame": "YEAR_TO_DATE"}]),
+        json!([
+            {"isin": "US0378331005", "timeFrame": "YEAR_TO_DATE"},
+            {}
+        ]),
+    ];
+
+    for series in cases {
+        let response = json!({"timeSeriesBySecurity": series});
+        let err = project_broker_chart_response(
+            "US0378331005",
+            crate::cli::BrokerChartTimeframe::OneMonth,
+            &response,
+        )
+        .unwrap_err();
+
+        let classified = classify_error(&err);
+        assert_eq!(classified.code, "broker_response_invalid", "{response}");
+        assert_eq!(classified.exit_code, 30, "{response}");
+    }
+}
+
+#[test]
+fn project_broker_chart_response_preserves_invalid_response_classification() {
+    let cases = [
+        json!({}),
+        json!({"timeSeriesBySecurity": null}),
+        json!({"timeSeriesBySecurity": {}}),
+        json!({
+            "timeSeriesBySecurity": [{
+                "timeFrame": "ONE_MONTH"
+            }]
+        }),
+        json!({
+            "timeSeriesBySecurity": [{
+                "isin": "DE000BASF111",
+                "timeFrame": "ONE_MONTH"
+            }]
+        }),
+    ];
+
+    for response in cases {
+        let err = project_broker_chart_response(
+            "US0378331005",
+            crate::cli::BrokerChartTimeframe::OneMonth,
+            &response,
+        )
+        .unwrap_err();
+
+        let classified = classify_error(&err);
+        assert_eq!(classified.code, "broker_response_invalid");
+        assert_eq!(classified.exit_code, 30);
+    }
 }
 
 #[test]
@@ -792,7 +980,7 @@ fn project_broker_remove_savings_plan_response_requires_non_empty_id() {
 
 #[test]
 fn project_broker_transactions_maps_variants_and_preserves_order() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -810,7 +998,6 @@ fn project_broker_transactions_maps_variants_and_preserves_order() {
                             "lastEventDateTime": {"time":"2026-03-10T10:00:00Z"},
                             "description": "Deposit",
                             "custodian": "BAADER_BANK",
-                            "documents": [],
                             "relatedIsin": null,
                             "cashTransactionType": "DEPOSIT",
                             "amount": "100"
@@ -825,7 +1012,6 @@ fn project_broker_transactions_maps_variants_and_preserves_order() {
                             "lastEventDateTime": {"time":"2026-03-09T10:00:00Z"},
                             "description": "Buy",
                             "custodian": "BAADER_BANK",
-                            "documents": [],
                             "isin": "US0378331005",
                             "securityTransactionType": "SINGLE",
                             "quantity": "1.23",
@@ -843,8 +1029,7 @@ fn project_broker_transactions_maps_variants_and_preserves_order() {
                             "isCancellation": false,
                             "lastEventDateTime": null,
                             "description": "Unknown variant",
-                            "custodian": null,
-                            "documents": []
+                            "custodian": null
                         }
                     ]
                 }
@@ -862,11 +1047,87 @@ fn project_broker_transactions_maps_variants_and_preserves_order() {
     assert_eq!(projected["items"][1]["security_transaction_type"], "SINGLE");
     assert_eq!(projected["items"][2]["id"], "tx-3");
     assert_eq!(projected["items"][2]["unknown_summary_type"], true);
+    assert_eq!(projected["crypto"]["count"], 0);
+    assert_eq!(projected["crypto"]["items"], json!([]));
+}
+
+#[test]
+fn project_broker_transactions_maps_crypto_activity_and_pagination() {
+    let input = broker_input(false);
+    let response = json!({
+        "account": {
+            "brokerPortfolio": {
+                "moreTransactions": {"cursor": null, "total": 0, "transactions": []},
+                "crypto": {
+                    "moreTransactions": {
+                        "cursor": "crypto-next",
+                        "total": 2,
+                        "transactions": [
+                            {
+                                "__typename": "CryptoSecurityTransactionSummary",
+                                "id": "crypto-1",
+                                "currency": "EUR",
+                                "type": "SECURITY_TRANSACTION",
+                                "status": "FILLED",
+                                "lastEventDateTime": {"time": "2026-03-11T10:00:00Z"},
+                                "description": "Bitcoin buy",
+                                "ticker": "BTC",
+                                "securityTransactionType": "BUY",
+                                "coinQuantity": "0.01",
+                                "quantity": "1",
+                                "amount": "500",
+                                "side": "BUY"
+                            },
+                            {
+                                "__typename": "CryptoNonTradeSecurityTransactionSummary",
+                                "id": "crypto-2",
+                                "currency": "EUR",
+                                "type": "NON_TRADE_SECURITY_TRANSACTION",
+                                "status": "SETTLED",
+                                "lastEventDateTime": "2026-03-10T10:00:00Z",
+                                "description": "Crypto transfer",
+                                "nonTradeSecurityTransactionType": "TRANSFER_IN",
+                                "coinQuantity": "0.02",
+                                "quantity": "2",
+                                "amount": "1000"
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    });
+
+    let projected = project_broker_transactions_response(&input, &response).expect("project");
+    assert_eq!(projected["crypto"]["cursor"], "crypto-next");
+    assert_eq!(projected["crypto"]["total"], 2);
+    assert_eq!(projected["crypto"]["count"], 2);
+    assert_eq!(projected["crypto"]["items"][0]["ticker"], "BTC");
+    assert_eq!(projected["crypto"]["items"][0]["transaction_type"], "BUY");
+    assert_eq!(projected["crypto"]["items"][0]["coin_quantity"], "0.01");
+    assert_eq!(projected["crypto"]["items"][0]["quantity"], "1");
+    assert_eq!(projected["crypto"]["items"][0]["status"], "FILLED");
+    assert_eq!(projected["crypto"]["items"][0]["amount"], "500");
+    assert_eq!(
+        projected["crypto"]["items"][0]["last_event_datetime"],
+        "2026-03-11T10:00:00Z"
+    );
+    assert_eq!(
+        projected["crypto"]["items"][1]["transaction_type"],
+        "TRANSFER_IN"
+    );
+    assert_eq!(projected["crypto"]["items"][1]["quantity"], "2");
+    assert_eq!(projected["crypto"]["items"][1]["status"], "SETTLED");
+    assert_eq!(projected["crypto"]["items"][1]["amount"], "1000");
+    assert_eq!(
+        projected["crypto"]["items"][1]["last_event_datetime"],
+        "2026-03-10T10:00:00Z"
+    );
 }
 
 #[test]
 fn project_broker_transaction_details_maps_security_trade_tax_fields() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -875,13 +1136,6 @@ fn project_broker_transaction_details_maps_security_trade_tax_fields() {
                     "id": "tx-42",
                     "currency": "EUR",
                     "type": "SECURITY_TRANSACTION",
-                    "documents": [
-                        {
-                            "id": "doc-1",
-                            "url": "https://example.test/doc-1",
-                            "label": "Contract note"
-                        }
-                    ],
                     "lastEventDateTime": {"time":"2026-04-15T10:22:31Z"},
                     "isPending": false,
                     "isCancellation": false,
@@ -994,7 +1248,7 @@ fn project_broker_transaction_details_maps_security_trade_tax_fields() {
 
 #[test]
 fn project_broker_transaction_details_maps_cash_transaction_fields() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -1003,7 +1257,6 @@ fn project_broker_transaction_details_maps_cash_transaction_fields() {
                     "id": "cash-1",
                     "currency": "EUR",
                     "type": "CASH_TRANSACTION",
-                    "documents": [],
                     "lastEventDateTime": {"time":"2026-04-17T09:30:00Z"},
                     "isPending": false,
                     "isCancellation": false,
@@ -1071,7 +1324,7 @@ fn project_broker_transaction_details_maps_cash_transaction_fields() {
 
 #[test]
 fn project_broker_transaction_details_maps_non_trade_security_fields() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -1080,7 +1333,6 @@ fn project_broker_transaction_details_maps_non_trade_security_fields() {
                     "id": "non-trade-1",
                     "currency": "EUR",
                     "type": "SECURITY_TRANSACTION",
-                    "documents": [],
                     "lastEventDateTime": {"time":"2026-04-18T11:45:00Z"},
                     "isPending": false,
                     "isCancellation": false,
@@ -1151,7 +1403,7 @@ fn project_broker_transaction_details_maps_non_trade_security_fields() {
 
 #[test]
 fn project_broker_transaction_details_gracefully_maps_eltif() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -1160,7 +1412,6 @@ fn project_broker_transaction_details_gracefully_maps_eltif() {
                     "id": "eltif-1",
                     "currency": "EUR",
                     "type": "SECURITY_TRANSACTION",
-                    "documents": [],
                     "lastEventDateTime": {"time":"2026-04-16T12:00:00Z"},
                     "isPending": true,
                     "isCancellation": false,
@@ -1251,7 +1502,7 @@ fn project_broker_security_news_sorts_sources() {
 
 #[test]
 fn project_broker_price_alerts_flattens() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -1291,7 +1542,7 @@ fn project_broker_price_alerts_flattens() {
 
 #[test]
 fn project_broker_crypto_price_alerts_flattens() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -1334,7 +1585,7 @@ fn project_broker_crypto_price_alerts_flattens() {
 
 #[test]
 fn project_broker_crypto_price_alerts_returns_empty_when_crypto_tree_is_absent() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -1353,7 +1604,7 @@ fn project_broker_crypto_price_alerts_returns_empty_when_crypto_tree_is_absent()
 
 #[test]
 fn project_broker_cash_breakdown_includes_only_approved_fields() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -1419,7 +1670,7 @@ fn project_broker_cash_breakdown_includes_only_approved_fields() {
 
 #[test]
 fn project_broker_cash_breakdown_returns_nulls_when_payments_are_missing() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {}
@@ -1448,7 +1699,7 @@ fn project_broker_cash_breakdown_returns_nulls_when_payments_are_missing() {
 
 #[test]
 fn project_broker_savings_plans_flattens_and_filters() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "account": {
             "brokerPortfolio": {
@@ -1640,7 +1891,7 @@ fn project_broker_savings_plan_by_isin_response_maps_security_and_plan() {
 
 #[test]
 fn project_broker_add_price_alert_response_maps_items() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "addPriceAlert": {
             "security": {
@@ -1664,7 +1915,7 @@ fn project_broker_add_price_alert_response_maps_items() {
 
 #[test]
 fn project_broker_add_crypto_price_alert_response_maps_items() {
-    let input = broker_input(false, None);
+    let input = broker_input(false);
     let response = json!({
         "addCryptoPriceAlert": {
             "crypto": {

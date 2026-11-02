@@ -3,12 +3,12 @@ use serde_json::{Map, Value, json};
 
 #[cfg(test)]
 use crate::trade::NumberOfShares;
-use crate::trade::TradeSide;
+use crate::trade::{TradeComplianceDecision, TradeSide};
 use crate::trade_confirmation::ConfirmationPhase1Input;
 use crate::trade_execution::{
-    ORDER_SIDE_BUY, ORDER_SIDE_SELL, PreparedTrade, VENUE_GETTEX, VENUE_LABEL_GETTEX,
-    VENUE_LABEL_SEIX, VENUE_LABEL_XETRA, VENUE_SEIX, VENUE_XETR, canonical_decimal_from_f64,
+    ORDER_SIDE_BUY, ORDER_SIDE_SELL, PreparedTrade, canonical_decimal_from_f64,
 };
+use crate::trade_venue::{VENUE_XETR, display_venue_label as display_venue_label_from_table};
 
 #[derive(Clone, Copy)]
 struct PresentationSectionSpec {
@@ -57,6 +57,8 @@ pub(crate) const PRICE_WARNING_STOP_BUY_IMMEDIATE_ACTIVATION: &str =
     "Your STOP is below the current price. The order will be active immediately.";
 pub(crate) const PRICE_WARNING_STOP_SELL_IMMEDIATE_ACTIVATION: &str =
     "Your STOP is above the current price. The order will be active immediately.";
+pub(crate) const PRICE_WARNING_STOP_LIMIT_BUY_IMMEDIATE_EXECUTION: &str = "Your LIMIT is above your STOP. Once triggered, the order may execute immediately, subject to your LIMIT and available liquidity.";
+pub(crate) const PRICE_WARNING_STOP_LIMIT_SELL_IMMEDIATE_EXECUTION: &str = "Your LIMIT is below your STOP. Once triggered, the order may execute immediately, subject to your LIMIT and available liquidity.";
 const OPTIONAL_ENTRY_COSTS_RESULT_ROOT: &str = "/result/ex_ante_costs/entryCosts";
 const OPTIONAL_INITIAL_YEAR_COSTS_RESULT_ROOT: &str =
     "/result/ex_ante_costs/effectOnReturn/initialYearCosts";
@@ -147,7 +149,7 @@ const PHASE1_PRESENTATION_SECTION_REGULATORY_DISCLOSURES: PresentationSectionSpe
         title: "Regulatory disclosures",
     };
 
-const PHASE1_PRESENTATION_FIELDS_PREFIX: [PresentationFieldSpec; 26] = [
+const PHASE1_PRESENTATION_FIELDS_PREFIX: [PresentationFieldSpec; 28] = [
     PresentationFieldSpec {
         section_key: "trade_intent",
         path: "/result/intent/isin",
@@ -159,6 +161,18 @@ const PHASE1_PRESENTATION_FIELDS_PREFIX: [PresentationFieldSpec; 26] = [
         path: "/result/intent/order_type",
         label: "Order type",
         nullable: false,
+    },
+    PresentationFieldSpec {
+        section_key: "trade_intent",
+        path: "/result/intent/limit_price",
+        label: "Limit price",
+        nullable: true,
+    },
+    PresentationFieldSpec {
+        section_key: "trade_intent",
+        path: "/result/intent/stop_price",
+        label: "Stop price",
+        nullable: true,
     },
     PresentationFieldSpec {
         section_key: "trade_intent",
@@ -585,8 +599,8 @@ const PHASE1_PRESENTATION_FIELDS_SUITABILITY: [PresentationFieldSpec; 7] = [
     },
     PresentationFieldSpec {
         section_key: "suitability",
-        path: "/result/suitability/requires_accept_unsuitable",
-        label: "Requires unsuitable acknowledgement",
+        path: "/result/suitability/requires_appropriateness_warning_acknowledgement",
+        label: "Requires appropriateness warning acknowledgement",
         nullable: false,
     },
 ];
@@ -656,12 +670,7 @@ pub(crate) struct RegulatoryDisclosures {
 }
 
 pub(crate) fn display_venue_label(selected_venue: &str) -> String {
-    match selected_venue.trim().to_uppercase().as_str() {
-        VENUE_GETTEX => VENUE_LABEL_GETTEX.to_string(),
-        VENUE_XETR => VENUE_LABEL_XETRA.to_string(),
-        VENUE_SEIX => VENUE_LABEL_SEIX.to_string(),
-        _ => selected_venue.trim().to_string(),
-    }
+    display_venue_label_from_table(selected_venue)
 }
 
 pub(crate) fn build_buy_regulatory_disclosures(
@@ -798,6 +807,33 @@ fn build_price_warnings(prepared: &PreparedTrade) -> Value {
         }
     }
 
+    if let (Some(limit), Some(stop), Some(stop_raw)) = (
+        prepared.intent.limit_price,
+        prepared.intent.stop_price,
+        prepared.intent.stop_price_str.as_deref(),
+    ) {
+        let relationship_warning = match prepared.intent.side {
+            TradeSide::Buy if limit > stop => Some((
+                "stop_limit_buy_immediate_execution",
+                PRICE_WARNING_STOP_LIMIT_BUY_IMMEDIATE_EXECUTION,
+            )),
+            TradeSide::Sell if limit < stop => Some((
+                "stop_limit_sell_immediate_execution",
+                PRICE_WARNING_STOP_LIMIT_SELL_IMMEDIATE_EXECUTION,
+            )),
+            _ => None,
+        };
+        if let Some((code, message)) = relationship_warning {
+            items.push(build_price_warning_item(
+                code,
+                message,
+                "limit_price",
+                "stop",
+                stop_raw,
+            ));
+        }
+    }
+
     json!({ "items": items })
 }
 
@@ -812,26 +848,13 @@ fn append_phase1_sizing_argument(cmd: &mut String, phase1_input: &ConfirmationPh
 pub(crate) fn build_phase2_command_template(
     confirmation_id: &str,
     phase1_input: &ConfirmationPhase1Input,
-    requires_accept_unsuitable: bool,
+    requires_appropriateness_warning_acknowledgement: bool,
     json_mode: bool,
 ) -> String {
-    let mut cmd = format!(
-        "sc broker trade {} --isin {} --order-type {}",
-        phase1_input.side, phase1_input.isin, phase1_input.order_type
-    );
-    append_phase1_sizing_argument(&mut cmd, phase1_input);
-    if let Some(venue) = phase1_input.venue.as_deref() {
-        cmd.push_str(&format!(" --venue {venue}"));
-    }
-    if let Some(limit_price) = phase1_input.limit_price.as_deref() {
-        cmd.push_str(&format!(" --limit-price {limit_price}"));
-    }
-    if let Some(stop_price) = phase1_input.stop_price.as_deref() {
-        cmd.push_str(&format!(" --stop-price {stop_price}"));
-    }
+    let mut cmd = build_phase1_command_template(phase1_input, false);
     cmd.push_str(&format!(" --confirm {confirmation_id}"));
-    if requires_accept_unsuitable {
-        cmd.push_str(" --accept-unsuitable");
+    if requires_appropriateness_warning_acknowledgement {
+        cmd.push_str(" --acknowledge-appropriateness-warning");
     }
     if json_mode {
         cmd.push_str(" --json");
@@ -861,6 +884,19 @@ pub(crate) fn build_phase1_command_template(
         cmd.push_str(" --json");
     }
     cmd
+}
+
+pub(crate) fn build_suitability_payload(decision: &TradeComplianceDecision) -> Value {
+    json!({
+        "source": decision.source_kind.as_str(),
+        "type": decision.suitability_type.map(|value| value.as_str()),
+        "status": decision.status.as_str(),
+        "action_when_unsuitable": decision.action_when_unsuitable.map(|value| value.as_str()),
+        "questionnaire_required": decision.questionnaire_required,
+        "questionnaire_reason": decision.questionnaire_reason,
+        "requires_appropriateness_warning_acknowledgement": decision.requires_appropriateness_warning_acknowledgement,
+        "acknowledgement_flag": decision.requires_appropriateness_warning_acknowledgement.then_some("--acknowledge-appropriateness-warning"),
+    })
 }
 
 pub(crate) fn build_result_payload(
@@ -902,22 +938,7 @@ pub(crate) fn build_result_payload(
             "reason": "phase_1_preview_only"
         })
     });
-    let suitability = json!({
-        "source": prepared.compliance_decision.source_kind.as_str(),
-        "type": prepared.compliance_decision.suitability_type.map(|value| value.as_str()),
-        "status": prepared.compliance_decision.status.as_str(),
-        "action_when_unsuitable": prepared
-            .compliance_decision
-            .action_when_unsuitable
-            .map(|value| value.as_str()),
-        "questionnaire_required": prepared.compliance_decision.questionnaire_required,
-        "questionnaire_reason": prepared.compliance_decision.questionnaire_reason,
-        "requires_accept_unsuitable": prepared.compliance_decision.requires_accept_unsuitable,
-        "accept_flag": prepared
-            .compliance_decision
-            .requires_accept_unsuitable
-            .then_some("--accept-unsuitable"),
-    });
+    let suitability = build_suitability_payload(&prepared.compliance_decision);
     let mut result = json!({
         "intent": {
             "side": prepared.intent.side_label(),
@@ -1269,11 +1290,11 @@ fn render_suitability_block(payload: &Value) -> Vec<String> {
             .unwrap_or_else(|| value.to_string()),
         None => "<missing>".to_string(),
     };
-    let requires_accept_unsuitable = payload
-        .pointer("/result/suitability/requires_accept_unsuitable")
+    let requires_appropriateness_warning_acknowledgement = payload
+        .pointer("/result/suitability/requires_appropriateness_warning_acknowledgement")
         .map(|value| value.to_string())
         .unwrap_or_else(|| "<missing>".to_string());
-    let accept_flag = match payload.pointer("/result/suitability/accept_flag") {
+    let acknowledgement_flag = match payload.pointer("/result/suitability/acknowledgement_flag") {
         Some(value) if value.is_null() => "null".to_string(),
         Some(value) => value
             .as_str()
@@ -1289,9 +1310,11 @@ fn render_suitability_block(payload: &Value) -> Vec<String> {
     lines.push(format!("questionnaire_required: {questionnaire_required}"));
     lines.push(format!("questionnaire_reason: {questionnaire_reason}"));
     lines.push(format!(
-        "requires_accept_unsuitable: {requires_accept_unsuitable}"
+        "requires_appropriateness_warning_acknowledgement: {requires_appropriateness_warning_acknowledgement}"
     ));
-    lines.push(format!("phase_2_acknowledgement_flag: {accept_flag}"));
+    lines.push(format!(
+        "phase_2_acknowledgement_flag: {acknowledgement_flag}"
+    ));
 
     lines
 }
@@ -1611,6 +1634,20 @@ fn render_trade_prefix_lines(payload: &Value, buy: bool) -> Vec<String> {
         .and_then(|v| v.get("instruction"))
         .and_then(Value::as_str);
     let mut lines = vec![format!("isin: {isin}")];
+    if let Some(order_type) = payload
+        .pointer("/result/intent/order_type")
+        .and_then(Value::as_str)
+    {
+        lines.push(format!("order_type: {order_type}"));
+    }
+    for field in ["limit_price", "stop_price"] {
+        if let Some(price) = payload
+            .pointer(&format!("/result/intent/{field}"))
+            .and_then(Value::as_str)
+        {
+            lines.push(format!("{field}: {price} {currency}"));
+        }
+    }
     if buy {
         if let Some(amount) = amount {
             lines.push(format!("amount: {amount}"));
@@ -1704,7 +1741,8 @@ mod tests {
     use crate::config::TargetEnv;
     use crate::trade::TradeTradabilityGate;
     use crate::trade_confirmation::ConfirmationFields;
-    use crate::trade_execution::{TradeIntent, VENUE_LABEL_SEIX};
+    use crate::trade_execution::TradeIntent;
+    use crate::trade_venue::VENUE_LABEL_SEIX;
 
     fn sample_phase1_input(side: &str) -> ConfirmationPhase1Input {
         let (amount, shares) = match side {
@@ -1718,7 +1756,7 @@ mod tests {
             amount,
             shares,
             venue: Some("SEIX".to_string()),
-            order_type: "limit".to_string(),
+            order_type: "stop-limit".to_string(),
             limit_price: Some("48.50".to_string()),
             stop_price: Some("47.00".to_string()),
         }
@@ -1731,7 +1769,7 @@ mod tests {
             amount: None,
             shares: Some("9".to_string()),
             venue: Some("SEIX".to_string()),
-            order_type: "limit".to_string(),
+            order_type: "stop-limit".to_string(),
             limit_price: Some("48.50".to_string()),
             stop_price: Some("47.00".to_string()),
         }
@@ -1892,12 +1930,108 @@ mod tests {
     }
 
     #[test]
+    fn stop_limit_prices_are_visible_in_human_and_structured_presentations() {
+        for side in [TradeSide::Buy, TradeSide::Sell] {
+            let mut prepared = sample_prepared_trade(side);
+            prepared.intent.order_type = "stop-limit".to_string();
+            prepared.intent.limit_price = Some(110.0);
+            prepared.intent.limit_price_str = Some("110.00".to_string());
+            prepared.intent.stop_price = Some(105.0);
+            prepared.intent.stop_price_str = Some("105.00".to_string());
+            let result = build_result_payload(&prepared, None);
+            let presentation = build_phase1_presentation(
+                &result,
+                &json!({"id": "scb1_test", "expires_at_epoch": 1_777_777_777i64}),
+            )
+            .expect("presentation");
+            for (path, price) in [
+                ("/result/intent/limit_price", "110.00"),
+                ("/result/intent/stop_price", "105.00"),
+            ] {
+                assert_eq!(
+                    find_field(&presentation, path).expect("price in presentation")["value"],
+                    price
+                );
+            }
+            let payload = json!({"result": result});
+            let lines = match side {
+                TradeSide::Buy => render_trade_buy_text(&payload),
+                TradeSide::Sell => render_trade_sell_text(&payload),
+            };
+            assert!(lines.iter().any(|line| line == "order_type: stop-limit"));
+            assert!(lines.iter().any(|line| line == "limit_price: 110.00 EUR"));
+            assert!(lines.iter().any(|line| line == "stop_price: 105.00 EUR"));
+        }
+    }
+
+    #[test]
+    fn stop_limit_warnings_use_strict_relationships_and_activation_first() {
+        for side in [TradeSide::Buy, TradeSide::Sell] {
+            for stop in [99.0, 100.0, 101.0] {
+                for limit in [stop - 1.0, stop, stop + 1.0] {
+                    let mut prepared = sample_prepared_trade(side);
+                    prepared.intent.order_type = "stop-limit".to_string();
+                    prepared.intent.stop_price = Some(stop);
+                    prepared.intent.stop_price_str = Some(stop.to_string());
+                    prepared.intent.limit_price = Some(limit);
+                    prepared.intent.limit_price_str = Some(limit.to_string());
+                    prepared.quote_mid_price_value = 100.0;
+                    prepared.quote_mid_price = "100".to_string();
+                    let (activation, relationship, activation_code, relationship_code, message) =
+                        match side {
+                            TradeSide::Buy => (
+                                stop <= 100.0,
+                                limit > stop,
+                                "stop_buy_immediate_activation",
+                                "stop_limit_buy_immediate_execution",
+                                "Your LIMIT is above your STOP. Once triggered, the order may execute immediately, subject to your LIMIT and available liquidity.",
+                            ),
+                            TradeSide::Sell => (
+                                stop >= 100.0,
+                                limit < stop,
+                                "stop_sell_immediate_activation",
+                                "stop_limit_sell_immediate_execution",
+                                "Your LIMIT is below your STOP. Once triggered, the order may execute immediately, subject to your LIMIT and available liquidity.",
+                            ),
+                        };
+                    let result = build_result_payload(&prepared, None);
+                    let items = result["price_warnings"]["items"].as_array().expect("items");
+                    let expected: Vec<&str> = [
+                        (activation, activation_code),
+                        (relationship, relationship_code),
+                    ]
+                    .into_iter()
+                    .filter_map(|(present, code)| present.then_some(code))
+                    .collect();
+                    assert_eq!(
+                        items
+                            .iter()
+                            .map(|item| item["code"].as_str().unwrap())
+                            .collect::<Vec<_>>(),
+                        expected
+                    );
+                    if relationship {
+                        let item = items.last().expect("relationship");
+                        assert_eq!(item["message"], message);
+                        assert_eq!(item["trigger_field"], "limit_price");
+                        assert_eq!(item["reference_price_type"], "stop");
+                        assert_eq!(item["reference_price"], stop.to_string());
+                        let text =
+                            render_price_warnings_block(&json!({"result": result})).join("\n");
+                        assert!(text.contains(message));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn phase1_command_template_places_json_at_end() {
         let template = build_phase1_command_template(&sample_phase1_input("buy"), true);
 
         assert_eq!(
             template,
-            "sc broker trade buy --isin DE0007100000 --order-type limit --amount 500 --venue SEIX --limit-price 48.50 --stop-price 47.00 --json"
+            "sc broker trade buy --isin DE0007100000 --order-type stop-limit --amount 500 --venue SEIX --limit-price 48.50 --stop-price 47.00 --json"
         );
     }
 
@@ -1908,18 +2042,18 @@ mod tests {
 
         assert_eq!(
             template,
-            "sc broker trade sell --isin DE0007100000 --order-type limit --shares 9 --venue SEIX --limit-price 48.50 --stop-price 47.00 --confirm scb1_test --json"
+            "sc broker trade sell --isin DE0007100000 --order-type stop-limit --shares 9 --venue SEIX --limit-price 48.50 --stop-price 47.00 --confirm scb1_test --json"
         );
     }
 
     #[test]
-    fn phase2_command_template_includes_accept_unsuitable_when_required() {
+    fn phase2_command_template_includes_acknowledge_appropriateness_warning_when_required() {
         let template =
             build_phase2_command_template("scb1_test", &sample_phase1_input("buy"), true, true);
 
         assert_eq!(
             template,
-            "sc broker trade buy --isin DE0007100000 --order-type limit --amount 500 --venue SEIX --limit-price 48.50 --stop-price 47.00 --confirm scb1_test --accept-unsuitable --json"
+            "sc broker trade buy --isin DE0007100000 --order-type stop-limit --amount 500 --venue SEIX --limit-price 48.50 --stop-price 47.00 --confirm scb1_test --acknowledge-appropriateness-warning --json"
         );
     }
 
@@ -1929,7 +2063,7 @@ mod tests {
 
         assert_eq!(
             template,
-            "sc broker trade buy --isin DE0007100000 --order-type limit --shares 9 --venue SEIX --limit-price 48.50 --stop-price 47.00 --json"
+            "sc broker trade buy --isin DE0007100000 --order-type stop-limit --shares 9 --venue SEIX --limit-price 48.50 --stop-price 47.00 --json"
         );
     }
 
@@ -2033,6 +2167,35 @@ mod tests {
                 .pointer("/calculation/estimate_price_basis")
                 .and_then(Value::as_str),
             Some("limit_price")
+        );
+    }
+
+    #[test]
+    fn phase1_presentation_surfaces_required_appropriateness_warning_acknowledgement() {
+        let mut prepared = sample_prepared_trade(TradeSide::Buy);
+        prepared
+            .compliance_decision
+            .requires_appropriateness_warning_acknowledgement = true;
+        let result = build_result_payload(&prepared, None);
+        assert_eq!(
+            result["suitability"]["acknowledgement_flag"],
+            "--acknowledge-appropriateness-warning"
+        );
+
+        let presentation = build_phase1_presentation(
+            &result,
+            &json!({"id": "scb1_test", "expires_at_epoch": 1_777_777_777i64}),
+        )
+        .expect("presentation should build");
+        let acknowledgement = find_field(
+            &presentation,
+            "/result/suitability/requires_appropriateness_warning_acknowledgement",
+        )
+        .expect("warning acknowledgement requirement should be presented");
+        assert_eq!(acknowledgement["value"], true);
+        assert_eq!(
+            acknowledgement["label"],
+            "Requires appropriateness warning acknowledgement"
         );
     }
 
@@ -2153,8 +2316,8 @@ mod tests {
                     "action_when_unsuitable": Value::Null,
                     "questionnaire_required": false,
                     "questionnaire_reason": Value::Null,
-                    "requires_accept_unsuitable": false,
-                    "accept_flag": Value::Null
+                    "requires_appropriateness_warning_acknowledgement": false,
+                    "acknowledgement_flag": Value::Null
                 }
             },
             "confirmation": { "id": "scb1_test" },
@@ -2232,8 +2395,8 @@ mod tests {
                     "action_when_unsuitable": Value::Null,
                     "questionnaire_required": false,
                     "questionnaire_reason": Value::Null,
-                    "requires_accept_unsuitable": false,
-                    "accept_flag": Value::Null
+                    "requires_appropriateness_warning_acknowledgement": false,
+                    "acknowledgement_flag": Value::Null
                 }
             },
             "confirmation": { "id": "scb1_test" },
@@ -2450,8 +2613,8 @@ mod tests {
                     "action_when_unsuitable": Value::Null,
                     "questionnaire_required": false,
                     "questionnaire_reason": Value::Null,
-                    "requires_accept_unsuitable": false,
-                    "accept_flag": Value::Null
+                    "requires_appropriateness_warning_acknowledgement": false,
+                    "acknowledgement_flag": Value::Null
                 }
             },
             "confirmation": { "id": "scb1_test" },
