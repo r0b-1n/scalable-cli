@@ -427,6 +427,20 @@ export const de = {
     previewFailed: "Vorschau fehlgeschlagen",
     tradeFailed: "Order fehlgeschlagen",
     missingConfirmation: "Bestätigungs-ID aus der Vorschau fehlt",
+    recovery: {
+      title: "Ausgang der Order unklar",
+      body: "Die Verbindung brach beim Absenden ab. Die Order wurde möglicherweise trotzdem angelegt. Sende sie nicht einfach erneut – prüfe zuerst deine Orders.",
+      details: "Meldung des CLI",
+      check: "Orders prüfen",
+      recheck: "Erneut prüfen",
+      found: "Diese Orders für das Wertpapier gibt es seit dem Absenden. Ist deine dabei, wurde sie angelegt – nicht erneut senden.",
+      none: "Keine passende Order gefunden. Neue Orders können verzögert erscheinen – im Zweifel später erneut prüfen.",
+      checkFailed: "Orders konnten nicht geladen werden. Ohne Prüfung nicht erneut senden.",
+      retry: "Erneut senden (gleiche Bestätigungs-ID)",
+      retryHint: "Nutzt dieselbe Bestätigung und denselben Idempotenz-Schlüssel, damit keine doppelte Order entsteht.",
+      expired: "Die Bestätigung ist abgelaufen. Erst klären, ob die Order existiert – dann eine neue Vorschau erstellen.",
+      closedUnresolved: "Order-Ausgang ungeklärt – prüfe deine Orders, bevor du erneut handelst.",
+    },
   },
 
   groups: {
@@ -1007,6 +1021,20 @@ export const en: Translations = {
     previewFailed: "Preview failed",
     tradeFailed: "Trade failed",
     missingConfirmation: "Missing confirmation id from preview",
+    recovery: {
+      title: "Order outcome unknown",
+      body: "The connection failed while submitting. The order may still have been created. Do not simply resend it – check your orders first.",
+      details: "CLI message",
+      check: "Check orders",
+      recheck: "Check again",
+      found: "These orders for this security exist since you submitted. If yours is among them it was created – do not resend.",
+      none: "No matching order found. New orders can appear with a delay – if in doubt, check again later.",
+      checkFailed: "Could not load orders. Do not resend without checking.",
+      retry: "Resend (same confirmation id)",
+      retryHint: "Reuses the same confirmation and idempotency key so no duplicate order is created.",
+      expired: "The confirmation has expired. First establish whether the order exists – then create a new preview.",
+      closedUnresolved: "Order outcome unresolved – check your orders before trading again.",
+    },
   },
 
   groups: {

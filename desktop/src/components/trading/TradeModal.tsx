@@ -7,11 +7,26 @@ import Modal from "../ui/Modal";
 import OrderEntryForm from "./OrderEntryForm";
 import DisclosureView from "./DisclosureView";
 import ResultView from "./ResultView";
+import RecoveryView from "./RecoveryView";
+import { useToast } from "../ui/Toast";
 
-type TradeStep = "entry" | "disclosure" | "result";
+type TradeStep = "entry" | "disclosure" | "recovery" | "result";
 type PreviewArgs = Parameters<typeof api.tradePreview>[0];
 
 const ISIN_PATTERN = /^[A-Za-z]{2}[A-Za-z0-9]{9}[0-9]$/;
+
+/**
+ * The CLI wraps every failed `placeOrder` in `ORDER_SUBMISSION_FAILED` and says
+ * "treat this submit as failed" only for an explicit backend rejection. Any
+ * other submission failure — and a crashed/garbled sc process — may have
+ * created the order anyway.
+ */
+function isAmbiguousSubmitFailure(message: string): boolean {
+  if (message.includes("ORDER_SUBMISSION_FAILED")) {
+    return !message.includes("treat this submit as failed");
+  }
+  return /^(Process exited with code|Failed to run|Unexpected CLI output)/.test(message);
+}
 
 /**
  * The trade ticket. Three explicit steps, matching the CLI's own two-phase
@@ -20,11 +35,13 @@ const ISIN_PATTERN = /^[A-Za-z]{2}[A-Za-z0-9]{9}[0-9]$/;
  *  2. disclosure — `trade_preview` output rendered in full; the user reviews
  *     it, nothing is submitted yet.
  *  3. result     — only reached after the user presses the phase-2 button.
+ * A phase-2 failure with an unknown outcome detours through `recovery`.
  */
 export default function TradeModal() {
   const { tradeModalOpen, tradeModalSide, tradeModalIsin, tradeModalPrefill, activePortfolioId, closeTradeModal } =
     useAppStore();
   const { t } = useI18n();
+  const { push } = useToast();
 
   const [step, setStep] = useState<TradeStep>("entry");
   const [side, setSide] = useState<TradeSide>("buy");
@@ -48,6 +65,8 @@ export default function TradeModal() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [result, setResult] = useState<TradeSubmitData | null>(null);
+  const [submittedAt, setSubmittedAt] = useState(0);
+  const [recoveryAttempt, setRecoveryAttempt] = useState(0);
 
   // Synchronous in-flight guard: `disabled={loading}` only applies after a
   // re-render, so a fast double-activation could call the CLI twice.
@@ -112,6 +131,7 @@ export default function TradeModal() {
   }, [isin, tradeModalOpen, activePortfolioId]);
 
   const handleClose = () => {
+    if (step === "recovery") push({ tone: "warning", title: t.trade.recovery.closedUnresolved });
     resetForm();
     closeTradeModal();
   };
@@ -173,6 +193,7 @@ export default function TradeModal() {
     inFlight.current = true;
     setSubmitting(true);
     setSubmitError(null);
+    setSubmittedAt((prev) => (step === "recovery" ? prev : Date.now()));
     try {
       const data = await api.tradeSubmit({
         ...previewArgs,
@@ -182,7 +203,14 @@ export default function TradeModal() {
       setResult(data);
       setStep("result");
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : t.trade.tradeFailed);
+      const message = err instanceof Error ? err.message : t.trade.tradeFailed;
+      setSubmitError(message);
+      // Once in recovery, the original submit is still unresolved whatever
+      // the resend reports, so stay there and show the latest message.
+      if (step === "recovery" || isAmbiguousSubmitFailure(message)) {
+        setStep("recovery");
+        setRecoveryAttempt((n) => n + 1);
+      }
     } finally {
       inFlight.current = false;
       setSubmitting(false);
@@ -242,6 +270,20 @@ export default function TradeModal() {
           onSubmit={handleSubmit}
           submitting={submitting}
           error={submitError}
+        />
+      )}
+
+      {step === "recovery" && preview && submitError && (
+        <RecoveryView
+          key={recoveryAttempt}
+          side={side}
+          isin={isin.trim()}
+          submittedAt={submittedAt}
+          expiresAtEpoch={preview.confirmation.expires_at_epoch}
+          error={submitError}
+          retrying={submitting}
+          onRetry={handleSubmit}
+          onClose={handleClose}
         />
       )}
 
