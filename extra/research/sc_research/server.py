@@ -69,10 +69,10 @@ def get_portfolio_snapshot() -> dict[str, Any]:
 DOSSIER_DESCRIPTION = (
     "Everything known about one security, each part with provenance: live quote and multi-period "
     "performance; 1y and max-history metrics (return, annualised volatility, max drawdown, distance "
-    "from high/low, SMA 20/50/200, RSI 14, CAGR); the account's position, transactions, savings plans "
+    "from high/low, 20/50/200-calendar-day averages, RSI over 14 chart samples, CAGR); the account's position, transactions, savings plans "
     "and price alerts for it; Scalable news; identity (ticker, exchange via OpenFIGI); SEC fundamentals "
-    "(TTM revenue, margins, growth, EPS, cash flow, balance sheet) with valuation multiples (P/E, P/S, "
-    "FCF yield, FX-converted); recent SEC filings and insider-filing count; worldwide news (GDELT); "
+    "(TTM revenue, margins, growth, EPS, dividends, cash flow, balance sheet) with split-safe valuation multiples "
+    "(P/E, P/S, FCF and dividend yield, FX-converted); recent SEC filings and insider-filing count; worldwide news (GDELT); "
     "ECB FX rates. Pass `sections` to limit the work; valid: " + ", ".join(ALL_SECTIONS)
 )
 
@@ -93,7 +93,7 @@ def scan_securities(
     isins: list[str] | None = None,
 ) -> dict[str, Any]:
     """Fast triage across many securities: price, quote freshness, Scalable performances and 1y
-    metrics (return, volatility, distance from high, RSI, trend vs SMA 50/200, max drawdown) for every
+    metrics (return, volatility, distance from high, RSI, trend vs 50/200-day averages, max drawdown) for every
     holding, every watchlist entry, or a custom ISIN list (universe="custom" + isins). Use it to pick
     candidates, then get_security_dossier for depth."""
     r = research()
@@ -111,9 +111,12 @@ def scan_securities(
 @mcp.tool(annotations=READ)
 def search_securities(query: str) -> dict[str, Any]:
     """Find tradable securities on Scalable by name, ticker, WKN or ISIN (`sc broker search`)."""
-    if not query.strip() or len(query) > 200:
+    query = query.strip()
+    if not query or len(query) > 200:
         raise ToolError("query must be 1-200 characters")
-    return _call(lambda: research()._sc_run(["broker", "search", query.strip()]))
+    if query.startswith("-"):
+        raise ToolError("query must not start with '-'")
+    return _call(lambda: research()._sc_run(["broker", "search", query]))
 
 
 @mcp.tool(annotations=READ)
@@ -168,7 +171,8 @@ def analyze_security(isin: str) -> str:
 1. Call get_security_dossier(isin="{isin}") and get_portfolio_snapshot().
 2. Report, citing the section and fetched_at for every figure:
    - Business and identity; data gaps (every section whose status is not "ok").
-   - Price behaviour: 1y/max return, volatility, max drawdown, trend vs SMA 50/200, RSI.
+   - Price behaviour: 1y/max return, volatility, max drawdown, trend vs the 50/200-day averages, RSI
+     (rsi_14_samples is computed per chart sample; mention median_sampling_days).
    - Fundamentals and valuation if available: growth, margins, cash flow, balance sheet, P/E, P/S, FCF yield.
    - News and filings: what changed recently, from Scalable news, GDELT and SEC filings.
    - Fit with the portfolio: current weight, concentration effect, savings plans, alerts.
@@ -187,7 +191,8 @@ def review_portfolio() -> str:
    scan_securities(universe="watchlist") and get_market_context().
 2. Report allocation and concentration (top-1/top-5 weight, Herfindahl index, security-type mix),
    cash and buying power, open orders, savings plans and the local trade controls in force.
-3. Flag positions with notable drawdown, weak trend (below SMA 200), extreme RSI or stale quotes,
+3. Flag positions with notable drawdown, weak trend (below the 200-day average, vs_sma_200d_pct < 0),
+   extreme rsi_14_samples (check median_sampling_days: it is per sample, not per trading day) or stale quotes,
    and call get_security_dossier for the two or three most relevant ones.
 4. Propose concrete, prioritised follow-ups with reasoning and sources. Any trade idea goes through
    preview_trade and stays a proposal until the human submits phase 2 themselves.

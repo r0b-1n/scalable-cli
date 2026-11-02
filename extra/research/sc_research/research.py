@@ -8,7 +8,9 @@ as a status, never as missing or invented data.
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
+import json
 import os
 import re
 from collections.abc import Callable
@@ -39,10 +41,24 @@ SC_TTL = {"quote": 60, "chart_1y": 3600, "chart_max": 6 * 3600, "news": 900, "ac
 
 ScRunner = Callable[[list[str]], Any]
 
+# Environment that changes which backend/account `sc` talks to.
+TARGET_ENV = (
+    "SC_MOCK",
+    "SC_MOCK_PORT",
+    "SC_GRAPHQL_URL",
+    "SC_OAUTH_ISSUER",
+    "SC_OAUTH_CLIENT_ID",
+    "SC_OAUTH_AUDIENCE",
+    "SC_CONFIG_DIR",
+    "SC_SESSION_BACKEND",
+    "SC_BIN",
+)
+FX_MAX_AGE_DAYS = 10  # older ECB rates mean a discontinued or unpublished currency
+
 
 def _env_fingerprint() -> str:
     """Separates cache entries per CLI target (mock vs. real, config dir)."""
-    parts = [os.environ.get(k, "") for k in ("SC_MOCK", "SC_GRAPHQL_URL", "SC_OAUTH_ISSUER", "SC_CONFIG_DIR", "SC_BIN")]
+    parts = [os.environ.get(k, "") for k in TARGET_ENV]
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
 
 
@@ -56,7 +72,7 @@ class Research:
     # ------------------------------------------------------------ helpers
 
     def _sc(self, args: list[str], ttl: float) -> tuple[Any, float]:
-        return self.cache.fetch(f"sc:{self._env}:{' '.join(args)}", ttl, lambda: self._sc_run(args))
+        return self.cache.fetch(f"sc:{self._env}:{json.dumps(args)}", ttl, lambda: self._sc_run(args))
 
     def _cached(self, key: str, ttl: float, produce: Callable[[], Any]) -> tuple[Any, float]:
         return self.cache.fetch(key, ttl, produce)
@@ -74,7 +90,8 @@ class Research:
     def _chart_metrics(self, isin: str, timeframe: str) -> dict[str, Any]:
         def produce() -> tuple[Any, float]:
             data, fetched = self._sc(["broker", "chart", "--isin", isin, "--timeframe", timeframe], SC_TTL[f"chart_{timeframe}"])
-            return metrics.summarize(data), fetched
+            # Short-horizon technicals only make sense on the 1y series.
+            return metrics.summarize(data, technicals=timeframe == "1y"), fetched
 
         return section(f"derived:metrics(sc broker chart --timeframe {timeframe})", produce, derived=True)
 
@@ -117,39 +134,86 @@ class Research:
     def identity(self, isin: str) -> dict[str, Any]:
         return section("openfigi", lambda: self._cached(f"figi:{isin}", openfigi.TTL, lambda: openfigi.map_isin(isin)))
 
-    def fundamentals(self, name: str, identity: dict[str, Any], price: float | None, price_ccy: str | None) -> dict[str, dict[str, Any]]:
+    def fundamentals(
+        self,
+        isin: str,
+        name: str,
+        identity: dict[str, Any],
+        quote: dict[str, Any],
+        want: set[str],
+    ) -> dict[str, dict[str, Any]]:
         """Fundamentals, valuation and filings from SEC EDGAR for SEC registrants."""
+        found: dict[str, Any] = {}
 
         def cik() -> dict[str, Any]:
-            if identity.get("status") != "ok":
-                raise Unavailable("identity (OpenFIGI) unavailable, cannot resolve SEC ticker")
-            ident = identity["data"]
-            listing = ident.get("us_listing") or ident.get("primary") or {}
-            tickers, _ = self._cached("sec:tickers", edgar.TICKERS_TTL, edgar.company_tickers)
-            return edgar.find_cik(tickers, listing.get("ticker"), name or listing.get("name") or "")
+            if not found:
+                if identity.get("status") != "ok":
+                    raise Unavailable("identity (OpenFIGI) unavailable, cannot resolve SEC registrant")
+                ident = identity["data"]
+                listing = ident.get("us_listing") or ident.get("primary") or {}
+                tickers, _ = self._cached("sec:tickers", edgar.TICKERS_TTL, edgar.company_tickers)
+                found.update(edgar.find_cik(tickers, listing.get("ticker"), name or listing.get("name") or ""))
+            return found
 
         def facts() -> tuple[Any, float]:
-            found = cik()
-            doc, fetched = self._cached(f"sec:facts:{found['cik']}", edgar.FACTS_TTL, lambda: edgar.company_facts(found["cik"]))
-            fund = edgar.fundamentals(doc)
-            fund["sec_registrant"] = found
-            price_rc = None
-            if price is not None and price_ccy and fund.get("reporting_currency"):
-                rc = fund["reporting_currency"].split("/")[0]
-                rates, _ = self._fx([price_ccy, rc])
-                price_rc = ecb.convert(price, price_ccy, rc, rates)
-            fund["valuation"] = edgar.valuation(fund, price_rc)
+            reg = cik()
+            # Cache the parsed result: raw companyfacts documents are megabytes.
+            fund, fetched = self._cached(
+                f"sec:fund:{reg['cik']}", edgar.FACTS_TTL, lambda: edgar.fundamentals(edgar.company_facts(reg["cik"]))
+            )
+            fund = {**fund, "sec_registrant": reg}
+            fund["valuation"] = self._valuation(isin, fund, quote)
             return fund, fetched
 
         def filings() -> tuple[Any, float]:
-            found = cik()
-            doc, fetched = self._cached(f"sec:subs:{found['cik']}", edgar.SUBMISSIONS_TTL, lambda: edgar.submissions(found["cik"]))
+            reg = cik()
+            doc, fetched = self._cached(f"sec:subs:{reg['cik']}", edgar.SUBMISSIONS_TTL, lambda: edgar.submissions(reg["cik"]))
             return edgar.recent_filings(doc), fetched
 
-        return {
-            "fundamentals": section("sec-edgar:companyfacts (+ecb fx for valuation)", facts),
-            "filings": section("sec-edgar:submissions", filings),
-        }
+        out = {}
+        if "fundamentals" in want:
+            out["fundamentals"] = section("sec-edgar:companyfacts (+ecb fx for valuation)", facts)
+        if "filings" in want:
+            out["filings"] = section("sec-edgar:submissions", filings)
+        return out
+
+    def _valuation(self, isin: str, fund: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]:
+        """Valuation multiples, or a reason why they cannot be trusted. Never raises."""
+        price, price_ccy = quote.get("quote_mid_price"), quote.get("quote_currency")
+        rc = fund.get("reporting_currency")
+        if price is None or not price_ccy or not rc:
+            return {"available": False, "reason": "no quote price/currency or no reporting currency"}
+        if isin.startswith("US") and fund.get("filer_type") == "foreign":
+            # A US ISIN of a 20-F/40-F filer is usually an ADR; its ratio to
+            # ordinary shares is not in XBRL, so market cap would be off by it.
+            return {"available": False, "reason": "likely an ADR of a foreign filer; ADR ratio unknown"}
+        # Pence quotes (GBp/GBX) are 1/100 of a pound.
+        if price_ccy in ("GBp", "GBX"):
+            price, price_ccy = price / 100, "GBP"
+        price_ccy = price_ccy.upper()
+        fx_date = None
+        if price_ccy != rc:
+            try:
+                rates, _ = self._fx([price_ccy, rc])
+            except Exception as exc:  # noqa: BLE001 - only the valuation is lost
+                return {"available": False, "reason": f"ECB FX unavailable: {exc}"}
+            for ccy in {price_ccy, rc} - {"EUR"}:
+                rate = rates.get(ccy)
+                if not rate:
+                    return {"available": False, "reason": f"ECB publishes no reference rate for {ccy}"}
+                if (dt.date.today() - dt.date.fromisoformat(rate["date"])).days > FX_MAX_AGE_DAYS:
+                    return {"available": False, "reason": f"ECB rate for {ccy} is from {rate['date']}"}
+                fx_date = max(fx_date or rate["date"], rate["date"])
+            price = ecb.convert(price, price_ccy, rc, rates)
+        result = edgar.valuation(fund, price)
+        if result.get("available"):
+            result["price_source"] = {
+                "quote_currency": quote.get("quote_currency"),
+                "quote_timestamp_utc": quote.get("quote_timestamp_utc"),
+                "quote_is_outdated": quote.get("quote_is_outdated"),
+                "fx_date": fx_date,
+            }
+        return result
 
     def _fx(self, currencies: list[str]) -> tuple[Any, float]:
         wanted = sorted({c.upper() for c in currencies if c} - {"EUR"})
@@ -164,7 +228,7 @@ class Research:
     # ------------------------------------------------------------ products
 
     def security_dossier(self, isin: str, sections: list[str] | None = None, *, news_locale: str = "en_DE", news_days: int = 7) -> dict[str, Any]:
-        isin = isin.strip().upper()
+        isin = _check_isin(isin)
         want = set(sections or ALL_SECTIONS)
         unknown = want - set(ALL_SECTIONS)
         if unknown:
@@ -185,14 +249,13 @@ class Research:
             stage1["identity"] = lambda: self.identity(isin)
         out = self._parallel(stage1)
 
-        quote = (out["quote"].get("data") or {}).get("result") or {}
+        quote = _result(out["quote"].get("data"))
         name = quote.get("name") or ""
-        price = quote.get("quote_mid_price")
         price_ccy = quote.get("quote_currency")
 
         stage2: dict[str, Callable[[], Any]] = {}
         if want & {"fundamentals", "filings"}:
-            stage2["edgar"] = lambda: self.fundamentals(name, out.get("identity", {}), price, price_ccy)
+            stage2["edgar"] = lambda: self.fundamentals(isin, name, out.get("identity", {}), quote, want)
         if "news_global" in want:
             stage2["news_global"] = (
                 (lambda: self.news_global(gdelt.company_query(name), news_days)) if name else (lambda: section("gdelt", _no_name))
@@ -201,7 +264,7 @@ class Research:
             stage2["fx"] = lambda: section("ecb:exr", lambda: self._fx([price_ccy or "USD", "USD", "GBP", "CHF"]))
         later = self._parallel(stage2)
         if "edgar" in later:
-            out.update({k: v for k, v in later.pop("edgar").items() if k in want})
+            out.update(later.pop("edgar"))
         out.update(later)
         if "identity" not in want:
             out.pop("identity", None)
@@ -265,9 +328,11 @@ class Research:
         """Light per-security triage (quote + 1y metrics) for many ISINs."""
 
         def one(isin: str) -> dict[str, Any]:
+            if not ISIN_RE.fullmatch(isin):
+                return {"isin": isin, "errors": {"isin": "not a valid ISIN"}}
             q = self.quote(isin)
             m = self._chart_metrics(isin, "1y")
-            result = (q.get("data") or {}).get("result") or {}
+            result = _result(q.get("data"))
             stats = m.get("data") or {}
             return {
                 "isin": isin,
@@ -277,7 +342,10 @@ class Research:
                 "currency": result.get("quote_currency"),
                 "quote_is_outdated": result.get("quote_is_outdated"),
                 "performances": result.get("quote_performances"),
-                "metrics_1y": {k: stats.get(k) for k in ("return_pct", "volatility_annualized_pct", "below_high_pct", "rsi_14", "vs_sma_50_pct", "vs_sma_200_pct")}
+                "metrics_1y": {
+                    k: stats.get(k)
+                    for k in ("return_pct", "volatility_annualized_pct", "below_high_pct", "rsi_14_samples", "vs_sma_50d_pct", "vs_sma_200d_pct", "median_sampling_days")
+                }
                 if stats
                 else None,
                 "max_drawdown_1y_pct": (stats.get("max_drawdown") or {}).get("pct") if stats else None,
@@ -343,6 +411,18 @@ ORDER_TYPES = {"market", "limit", "stop", "stop-limit"}
 ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 DECIMAL_RE = re.compile(r"\d+(\.\d+)?")
 VENUE_RE = re.compile(r"[A-Za-z]{3,8}")
+
+
+def _check_isin(isin: str) -> str:
+    isin = isin.strip().upper()
+    if not ISIN_RE.fullmatch(isin):
+        raise ValueError(f"invalid ISIN {isin!r}")
+    return isin
+
+
+def _result(data: Any) -> dict[str, Any]:
+    result = data.get("result") if isinstance(data, dict) else None
+    return result if isinstance(result, dict) else {}
 
 
 def _no_name() -> tuple[Any, float]:

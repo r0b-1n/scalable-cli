@@ -17,7 +17,7 @@ plain **JSON CLI** for scripts.
 | Tool | Content | Sources |
 |---|---|---|
 | `get_portfolio_snapshot` | valuation and returns, cash and buying power, every position with weight and price vs FIFO, concentration (top-1/top-5, Herfindahl index, mix by type), open orders, savings plans, watchlist, price alerts, overnight savings, local trade controls | `sc` |
-| `get_security_dossier` | quote and performances; 1y and max-history metrics (return, annualised volatility, max drawdown, distance from high/low, SMA 20/50/200, RSI 14, CAGR); position, transactions, savings plans, alerts; Scalable news; identity; SEC fundamentals (TTM revenue, gross/operating/net margin, growth, EPS, dividends per share, cash flow, FCF, cash, debt, equity, shares) with valuation (P/E, P/S, FCF yield, dividend yield, FX-converted); recent filings and insider-filing count; worldwide news; FX | `sc`, OpenFIGI, SEC EDGAR, ECB, GDELT |
+| `get_security_dossier` | quote and performances; 1y metrics (return, realised volatility, max drawdown, distance from high/low, 20/50/200-calendar-day averages, RSI over 14 chart samples) and long-term max-history metrics (return, CAGR, volatility, drawdown); position, transactions, savings plans, alerts; Scalable news; identity; SEC fundamentals (TTM revenue, gross/operating/net margin, growth, EPS, dividends, cash flow, FCF, cash, debt, equity, shares) with split-safe valuation (P/E, P/S, FCF yield, dividend yield, FX-converted); recent filings and insider-filing count; worldwide news; FX | `sc`, OpenFIGI, SEC EDGAR, ECB, GDELT |
 | `scan_securities` | fast triage of holdings, watchlist or a custom ISIN list: price, freshness, performances, 1y metrics | `sc` |
 | `search_securities` | tradable securities by name, ticker, WKN or ISIN | `sc` |
 | `get_market_context` | ECB reference FX rates and key policy rates | ECB |
@@ -60,6 +60,23 @@ TTM figures are calculated as latest annual + current year-to-date − prior yea
 is an additive approximation. Restated values replace earlier filings for the same period. Where
 a company changed XBRL concepts over time, the concept with the most recent data is used. Facts
 older than 550 days are flagged `stale` and left out of ratios and valuation.
+
+More rules, because agents act on these numbers:
+
+- All monetary metrics use one reporting currency; facts in other units are ignored.
+- Ratios only combine facts with the same period end.
+- Growth is `null` for a zero or negative base, because the sign would mislead.
+- Valuation uses totals, which keeps it split-safe: market cap = price × cover-page shares (summed
+  across share classes), P/E = market cap / TTM net income, dividend yield = dividends paid /
+  market cap.
+- Valuation is withheld, with a reason, in these cases: when the FX rate is missing or older than
+  10 days, when the security is a US ISIN of a foreign filer (likely an ADR with an unknown
+  ratio), and when shares outstanding are stale.
+- `earnings_basis_age_days` and `price_source.quote_is_outdated` show how fresh the inputs are.
+
+Chart series are not evenly spaced (about every 2–3 days for 1y, weekly for max). Averages are
+therefore computed over calendar days, volatility comes from realised variance per year, and RSI
+is labelled per sample (`rsi_14_samples`, with `median_sampling_days`).
 
 ## Setup
 

@@ -27,13 +27,15 @@ class EdgarFundamentals(unittest.TestCase):
         dps = self.fund["ratios"]["dividends_per_share_ttm"]
         self.assertGreater(dps, 0.9)
         self.assertLess(dps, 1.2)
-        self.assertEqual(edgar.valuation(self.fund, 200.0)["dividend_yield_pct"], round(dps / 200 * 100, 2))
+        v = edgar.valuation(self.fund, 200.0)
+        paid = self.fund["metrics"]["dividends_paid"]["ttm"]["val"]
+        self.assertEqual(v["dividend_yield_pct"], round(paid / v["market_cap"] * 100, 2))  # split-safe totals
 
     def test_stale_facts_are_excluded(self):
         old = edgar.fundamentals(fixture("edgar_companyfacts_aapl.json"), today=dt.date(2029, 1, 1))
         self.assertTrue(old["metrics"]["revenue"]["ttm"]["stale"])
         self.assertIsNone(old["ratios"]["net_margin_pct"])
-        self.assertIsNone(edgar.valuation(old, 200.0)["pe_ttm"])
+        self.assertFalse(edgar.valuation(old, 200.0)["available"])
         self.assertFalse(self.fund["metrics"]["revenue"]["ttm"]["stale"])
 
     def test_ttm_uses_latest_annual_plus_ytd_minus_prior_ytd(self):
@@ -58,10 +60,16 @@ class EdgarFundamentals(unittest.TestCase):
         r = self.fund["ratios"]
         self.assertAlmostEqual(r["net_margin_pct"], 27.62, places=2)
         self.assertEqual(r["free_cash_flow_ttm"], 146724000000 - 10041000000)
-        v = edgar.valuation(self.fund, 200.0)
-        self.assertEqual(v["pe_ttm"], round(200 / 8.72, 2))
+        v = edgar.valuation(self.fund, 200.0, today=self.TODAY)
         self.assertEqual(v["market_cap"], 200 * 14594180000)
+        self.assertEqual(v["pe_ttm"], round(v["market_cap"] / self.fund["metrics"]["net_income"]["ttm"]["val"], 2))
+        self.assertEqual(v["earnings_basis_end"], "2026-06-27")
+        self.assertFalse(v["earnings_basis_older_than_400d"])
         self.assertFalse(edgar.valuation(self.fund, None)["available"])
+
+    def test_reporting_currency(self):
+        self.assertEqual(self.fund["reporting_currency"], "USD")
+        self.assertEqual(self.fund["filer_type"], "domestic")
 
     def test_restatement_wins(self):
         rows = [
@@ -69,6 +77,98 @@ class EdgarFundamentals(unittest.TestCase):
             {"start": "2024-01-01", "end": "2024-12-31", "val": 90, "form": "10-K/A", "filed": "2025-06-01"},
         ]
         self.assertEqual(edgar.flow_metric(rows)["latest_annual"]["val"], 90)
+
+
+def f(start, end, val, form="10-Q", fp="Q2", filed=None):
+    return {"start": start, "end": end, "val": val, "form": form, "fp": fp, "filed": filed or end, "accn": f"a-{end}-{form}"}
+
+
+class EdgarEdgeCases(unittest.TestCase):
+    TODAY = dt.date(2026, 11, 3)
+
+    def doc(self, concepts, taxonomy="us-gaap"):
+        return {"facts": {taxonomy: {name: {"units": units} for name, units in concepts.items()}}}
+
+    def test_growth_is_none_for_negative_base(self):
+        rows = [f("2024-01-01", "2024-12-31", -100, "10-K", "FY"), f("2025-01-01", "2025-12-31", -50, "10-K", "FY")]
+        self.assertIsNone(edgar.flow_metric(rows)["annual_growth_pct"])
+        rows[1]["val"] = 50
+        self.assertIsNone(edgar.flow_metric(rows)["annual_growth_pct"])
+
+    def test_feb_29_period_end(self):
+        rows = [
+            f("2023-03-01", "2024-02-29", 100, "10-K", "FY"),
+            f("2024-03-01", "2025-02-28", 120, "10-K", "FY"),
+            f("2024-03-01", "2024-08-31", 50, "10-Q", "Q2"),
+            f("2025-03-01", "2025-08-31", 70, "10-Q", "Q2"),
+        ]
+        out = edgar.flow_metric(rows, self.TODAY)
+        self.assertEqual(out["annual_growth_pct"], 20.0)
+        self.assertEqual(out["ttm"]["val"], 140)
+
+    def test_q1_ytd_updates_ttm(self):
+        rows = [
+            f("2024-01-01", "2024-12-31", 400, "10-K", "FY"),
+            f("2024-01-01", "2024-03-31", 90, "10-Q", "Q1"),
+            f("2025-01-01", "2025-03-31", 120, "10-Q", "Q1"),
+        ]
+        ttm = edgar.flow_metric(rows, self.TODAY)["ttm"]
+        self.assertEqual((ttm["val"], ttm["end"], ttm["method"]), (430, "2025-03-31", "annual_plus_ytd_minus_prior_ytd"))
+
+    def test_q2_three_month_fact_is_not_ytd(self):
+        rows = [
+            f("2024-01-01", "2024-12-31", 400, "10-K", "FY"),
+            f("2025-04-01", "2025-06-30", 999, "10-Q", "Q2"),  # quarter only
+            f("2025-01-01", "2025-06-30", 220, "10-Q", "Q2"),  # YTD
+            f("2024-01-01", "2024-06-30", 200, "10-Q", "Q2"),
+        ]
+        self.assertEqual(edgar.flow_metric(rows, self.TODAY)["ttm"]["val"], 420)
+
+    def test_ratios_need_the_same_period(self):
+        doc = self.doc({
+            "Revenues": {"USD": [f("2025-01-01", "2025-12-31", 1000, "10-K", "FY", "2026-03-01")]},
+            "GrossProfit": {"USD": [f("2024-01-01", "2024-12-31", 400, "10-K", "FY", "2025-03-01")]},
+            "NetIncomeLoss": {"USD": [f("2025-01-01", "2025-12-31", 100, "10-K", "FY", "2026-03-01")]},
+        })
+        r = edgar.fundamentals(doc, today=dt.date(2026, 6, 1))["ratios"]
+        self.assertIsNone(r["gross_margin_pct"])
+        self.assertEqual(r["net_margin_pct"], 10.0)
+
+    def test_units_are_never_mixed(self):
+        doc = self.doc({
+            "Revenues": {"EUR": [f("2025-01-01", "2025-12-31", 1000, "10-K", "FY")], "USD": [f("2024-01-01", "2024-12-31", 1100, "10-K", "FY")]},
+            "NetIncomeLoss": {"USD": [f("2025-01-01", "2025-12-31", 999, "10-K", "FY")]},
+        })
+        fund = edgar.fundamentals(doc, today=dt.date(2026, 6, 1))
+        self.assertEqual(fund["reporting_currency"], "EUR")
+        self.assertNotIn("net_income", fund["metrics"])  # only reported in USD
+
+    def test_pe_is_split_safe(self):
+        # 10:1 split after the 10-K: annual EPS pre-split, YTD EPS post-split.
+        doc = {"facts": {
+            "us-gaap": {
+                "Revenues": {"units": {"USD": [f("2024-01-01", "2024-12-31", 5000, "10-K", "FY")]}},
+                "NetIncomeLoss": {"units": {"USD": [f("2024-01-01", "2024-12-31", 1000, "10-K", "FY")]}},
+                "EarningsPerShareDiluted": {"units": {"USD/shares": [
+                    f("2024-01-01", "2024-12-31", 10.0, "10-K", "FY"),
+                    f("2025-01-01", "2025-06-30", 0.6, "10-Q", "Q2"),
+                    f("2024-01-01", "2024-06-30", 0.5, "10-Q", "Q2"),
+                ]}},
+            },
+            "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2025-07-20", "val": 1000, "filed": "2025-08-01", "accn": "q2"}]}}},
+        }}
+        fund = edgar.fundamentals(doc, today=dt.date(2025, 9, 1))
+        v = edgar.valuation(fund, 20.0, today=dt.date(2025, 9, 1))
+        self.assertEqual(v["pe_ttm"], 20.0)  # 20 x 1000 shares / 1000 net income, not 20 / 10.1
+
+    def test_share_classes_are_summed(self):
+        rows = [
+            {"end": "2026-01-20", "val": 5800, "filed": "2026-02-01", "accn": "k"},
+            {"end": "2026-01-20", "val": 860, "filed": "2026-02-01", "accn": "k"},
+            {"end": "2025-10-20", "val": 6500, "filed": "2025-11-01", "accn": "q"},
+        ]
+        latest = edgar.stock_metric(rows, self.TODAY, sum_classes=True)["latest"]
+        self.assertEqual((latest["val"], latest["share_classes_summed"]), (6660, 2))
 
 
 class EdgarIdentity(unittest.TestCase):

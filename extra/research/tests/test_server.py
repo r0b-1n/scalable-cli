@@ -63,6 +63,8 @@ class Server(unittest.TestCase):
         result = self.call("preview_trade", {"side": "buy", "isin": "not-an-isin", "amount": "10"})
         self.assertTrue(result.is_error)
         self.assertIn("invalid ISIN", result.content[0].text)
+        result = self.call("search_securities", {"query": "--help"})
+        self.assertTrue(result.is_error)
         result = self.call("scan_securities", {"universe": "custom"})
         self.assertTrue(result.is_error)
         self.assertIn("isins", result.content[0].text)

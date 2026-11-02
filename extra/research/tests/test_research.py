@@ -59,6 +59,16 @@ class Dossier(unittest.TestCase):
         with self.assertRaises(ValueError):
             research().security_dossier(ISIN, ["nope"])
 
+    def test_invalid_isin(self):
+        with self.assertRaises(ValueError):
+            research().security_dossier("--confirm")
+
+    def test_filings_only_skips_companyfacts(self):
+        with mock.patch.object(research_mod.edgar, "company_facts", mock.Mock(side_effect=AssertionError("not requested"))):
+            s = research().security_dossier(ISIN, ["filings"])["sections"]
+        self.assertEqual(list(s), ["quote", "filings"])
+        self.assertEqual(s["filings"]["status"], "ok")
+
     def test_sc_failure_is_a_status_not_an_exception(self):
         fake = FakeSc(fail={"quote": ScError("no_session", "No active session.", ["Run 'sc login'"])})
         s = research(fake).security_dossier(ISIN, ["quote", "news_global"])["sections"]
@@ -74,6 +84,40 @@ class EdgarWithoutUserAgent(unittest.TestCase):
             s = research().security_dossier(ISIN, ["fundamentals"])["sections"]
         self.assertEqual(s["fundamentals"]["status"], "unavailable")
         self.assertIn("SEC_USER_AGENT", s["fundamentals"]["reason"])
+
+
+class Valuation(unittest.TestCase):
+    def fund(self, **over):
+        import datetime as dt
+
+        from sc_research.providers import edgar
+
+        fund = edgar.fundamentals(fixture("edgar_companyfacts_aapl.json"), today=dt.date(2026, 11, 3))
+        return {**fund, **over}
+
+    def setUp(self):
+        self.r = research()
+
+    def test_fx_failure_only_loses_valuation(self):
+        with mock.patch.object(research_mod.ecb, "fx_rates", mock.Mock(side_effect=OSError("ECB down"))):
+            v = self.r._valuation("US0378331005", self.fund(), {"quote_mid_price": 200, "quote_currency": "EUR"})
+        self.assertFalse(v["available"])
+        self.assertIn("ECB", v["reason"])
+
+    def test_unpublished_currency(self):
+        with mock.patch.object(research_mod.ecb, "fx_rates", lambda c: {}):
+            v = self.r._valuation("US0378331005", self.fund(), {"quote_mid_price": 200, "quote_currency": "EUR"})
+        self.assertIn("no reference rate", v["reason"])
+
+    def test_adr_of_foreign_filer_is_not_valued(self):
+        v = self.r._valuation("US6701002056", self.fund(filer_type="foreign"), {"quote_mid_price": 50, "quote_currency": "USD"})
+        self.assertIn("ADR", v["reason"])
+
+    def test_pence_quotes(self):
+        rates = {"GBP": {"per_eur": 0.8, "date": "2099-01-01"}, "USD": {"per_eur": 1.0, "date": "2099-01-01"}}
+        with mock.patch.object(research_mod.ecb, "fx_rates", lambda c: rates), mock.patch.object(research_mod, "FX_MAX_AGE_DAYS", 10**6):
+            v = self.r._valuation("GB0000000000", self.fund(), {"quote_mid_price": 800, "quote_currency": "GBp"})
+        self.assertAlmostEqual(v["price_in_reporting_currency"], 8 / 0.8 * 1.0)
 
 
 class Snapshot(unittest.TestCase):
@@ -93,7 +137,14 @@ class Scan(unittest.TestCase):
     def test_scan_dedupes(self):
         out = research().scan([ISIN, ISIN.lower(), " "])
         self.assertEqual(out["count"], 1)
+        self.assertIn("vs_sma_200d_pct", out["items"][0]["metrics_1y"])
         self.assertIsNotNone(out["items"][0]["metrics_1y"]["return_pct"])
+
+    def test_scan_rejects_bad_isin_per_row(self):
+        fake = FakeSc()
+        out = research(fake).scan(["--help", ISIN])
+        self.assertEqual(out["items"][0]["errors"], {"isin": "not a valid ISIN"})
+        self.assertTrue(all("--help" not in c for c in fake.calls))
 
     def test_universe(self):
         self.assertEqual(len(research().universe("holdings")), len(fixture("sc/holdings.json")["result"]["items"]))
@@ -130,6 +181,7 @@ class Provenance(unittest.TestCase):
             raise Unavailable("nope")
 
         self.assertEqual(section("x", boom), {"source": "x", "status": "unavailable", "reason": "nope"})
+        self.assertEqual(section("x", lambda: (None, 1.0))["status"], "unavailable")
 
 
 if __name__ == "__main__":

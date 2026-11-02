@@ -7,7 +7,8 @@ import os
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -32,9 +33,18 @@ class Cache:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS entries (key TEXT PRIMARY KEY, fetched_at REAL NOT NULL, value TEXT NOT NULL)"
             )
+            # Nothing here lives longer than 30 days (FIGI mappings).
+            db.execute("DELETE FROM entries WHERE fetched_at < ?", (time.time() - 31 * 24 * 3600,))
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.path, timeout=30)
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # sqlite3's own context manager commits but never closes the connection.
+        db = sqlite3.connect(self.path, timeout=30)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def get(self, key: str, ttl: float) -> tuple[Any, float] | None:
         with _lock, self._connect() as db:

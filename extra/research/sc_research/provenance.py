@@ -43,4 +43,6 @@ def section(source: str, produce: Callable[[], tuple[Any, float | None]], *, der
         return {**base, "status": "error", "error": {"http_status": exc.status, "message": exc.message[:300]}}
     except Exception as exc:  # noqa: BLE001 - surfaced to the agent, never swallowed silently
         return {**base, "status": "error", "error": {"type": type(exc).__name__, "message": str(exc)[:300]}}
+    if data is None:
+        return {**base, "status": "unavailable", "reason": "source returned no data"}
     return {**base, "status": "ok", "fetched_at": iso(fetched_at) if fetched_at else now_iso(), "data": data}
