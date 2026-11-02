@@ -1,0 +1,19 @@
+[project]
+name = "sc-research"
+version = "0.1.0"
+description = "Research data layer for AI agents on top of the Scalable CLI: portfolio, market, fundamentals, filings, macro and news with provenance."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=2.3,<3"]
+
+[project.scripts]
+sc-research = "sc_research.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sc_research*"]
